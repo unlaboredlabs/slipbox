@@ -1,7 +1,7 @@
 import { SQL } from "bun";
 import type { Section } from "../index/sections";
 import { tsQuery } from "../index/words";
-import { type Doc, type Scope, Store } from "./store";
+import { type Doc, type Scope, type SectionRow, Store, toSection } from "./store";
 
 const INDEX_SCHEMA = `
 create table if not exists docs (
@@ -81,6 +81,10 @@ export class PostgresStore extends Store {
     await this.exec(INDEX_SCHEMA);
   }
 
+  protected async lockDoc(tx: SQL, path: string) {
+    await tx`select pg_advisory_xact_lock(hashtext(${path}))`;
+  }
+
   protected param(i: number) {
     return `$${i + 1}`;
   }
@@ -103,15 +107,15 @@ export class PostgresStore extends Store {
     await tx`delete from sections where doc_path = ${path}`;
   }
 
-  async wordSearch(terms: string[], scope: Scope, limit: number): Promise<number[]> {
+  async wordSearch(terms: string[], scope: Scope, limit: number): Promise<SectionRow[]> {
     if (!terms.length) return [];
     const where = this.scopeCondition("doc_path", scope, 1);
     const rows = await this.sql.unsafe(
-      `select id from sections, to_tsquery('english', $1) q
+      `select id, doc_path, heading, start_line, end_line, text, text_hash from sections, to_tsquery('english', $1) q
        where tsv @@ q and ${where.sql}
        order by ts_rank(tsv, q, 1) desc, id limit ${Number(limit)}`,
       [tsQuery(terms), ...where.params],
     );
-    return rows.map((r: any) => Number(r.id));
+    return rows.map(toSection);
   }
 }

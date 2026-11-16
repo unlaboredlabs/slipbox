@@ -193,6 +193,10 @@ describe(`server (${backend})`, () => {
     const { versions } = await (await api("/api/history?path=shared/stack.md")).json();
     const { diff } = await (await api(`/api/diff?path=shared/stack.md&from=${versions[1].commit}&to=${versions[0].commit}`)).json();
     expect(diff).toContain("+We deploy with Docker Compose.");
+    // Without from, the first version shows as all added lines.
+    const first = await (await api(`/api/diff?path=shared/stack.md&to=${versions[1].commit}`)).json();
+    expect(first.diff).toContain("+# Stack");
+    expect(first.diff).toContain("+We deploy with Kamal.");
 
     const restore = await api("/api/restore", { method: "POST", body: JSON.stringify({ path: "shared/stack.md", commit: versions[1].commit }) });
     expect((await restore.json()).version).toBe(versions[1].version);

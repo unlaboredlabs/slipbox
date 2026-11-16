@@ -49,6 +49,7 @@ data/
 - Each file is split into sections at headings (long sections split further at paragraph boundaries, about 1500 characters).
 - Word index: SQLite FTS5 / Postgres `tsvector`, BM25 (Postgres has none built in, so it ranks with `ts_rank`, its nearest equivalent), title and heading weighted higher. Common English stop words are dropped from queries on both.
 - Meaning index: one embedding per section from a local model that runs in-process (default `Xenova/bge-small-en-v1.5` via `@huggingface/transformers`, 384 dims; `EMBED_MODEL` changes it). No external API, so no outage, key or network between an agent and its memory.
+- A section is a meaning match only above a similarity floor and within a margin of the best match (one constant, measured for the default model on a labelled set of queries in the tests), so unrelated notes are not returned as matches.
 - The two result lists are merged with reciprocal rank fusion.
 
 Reliability rules, each with a test:
@@ -80,7 +81,7 @@ GET    /api/health                      { ok, db, version, embed: { model, loade
 GET    /api/tree?path=                  { path, entries: [{ name, path, type: "dir"|"file", summary, bytes, updatedAt }] }
 GET    /api/file?path=&version=         { path, title, summary, content, version, bytes, updatedAt }
 GET    /api/history?path=&limit=        { versions: [{ version, commit, at, agent, why }] }
-GET    /api/diff?path=&from=&to=        { diff }            unified diff text between two commits
+GET    /api/diff?path=&from=&to=        { diff }            unified diff text between two commits; without from, the file as created
 POST   /api/restore   { path, commit }  { version }         writes the old content as a new commit by "admin"
 GET    /api/search?q=&path=&limit=      { meaning: "ok"|"unavailable", results: [{ path, heading, startLine, endLine, snippet, score, wordRank, meaningRank }] }
 GET    /api/events?after=&limit=&agent= { events: [{ id, at, agent, action, path, query, ok }] }   newest first, only ids > after

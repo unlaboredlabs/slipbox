@@ -22,7 +22,7 @@ jobs:
   build:
     if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
     strategy:
-      fail-fast: true
+      fail-fast: false # one platform's failure still lets the others report
       matrix:
         include:
           # Native runners, so each program is smoke-tested with its own embedding runtime.

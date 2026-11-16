@@ -83,7 +83,7 @@ The database only helps: delete it, and everything is rebuilt from the files on 
 Each note is split into sections at its headings. A search runs two ways at once:
 
 - **Words**: a full-text index (SQLite FTS5, or Postgres `tsvector`) that ranks sections by how well they match, with titles and headings counting more.
-- **Meaning**: each section has an embedding from a local model (`Xenova/bge-small-en-v1.5` by default). The query is compared with every section the key may read.
+- **Meaning**: each section has an embedding from a local model (`Xenova/bge-small-en-v1.5` by default). The query is compared with every section the key may read, and a section counts as a match only if it is close enough: above a fixed similarity floor, and near the best match. A query that nothing answers gets no meaning matches rather than the least bad ones.
 
 The two ranked lists are merged with reciprocal rank fusion, and each result says whether words, meaning or both matched.
 
@@ -114,7 +114,7 @@ Set these in `~/.config/slipbox/config.env` or as environment variables (which w
 | `CONFIG_FILE` | `~/.config/slipbox/config.env` | |
 | `SERVICE_NAME` | `slipbox` | To run a second instance as its own service |
 
-Changing `EMBED_MODEL` re-embeds every section on the next start.
+Changing `EMBED_MODEL` re-embeds every section on the next start. The meaning floor (`MEANING_FLOOR` in `server/index/embed.ts`) is measured for the default model; another model may need it measured again.
 
 ## Development
 

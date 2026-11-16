@@ -71,6 +71,14 @@ describe(`files and history (${backend})`, () => {
     expect(results.filter((r) => r.status === "rejected" && (r.reason as any).code === "stale").length).toBe(4);
   });
 
+  test("concurrent writes to different files all land and are indexed", async () => {
+    const paths = Array.from({ length: 20 }, (_, i) => `shared/n${i}.md`);
+    const body = Array.from({ length: 10 }, (_, j) => `## Part ${j}\n\nobelisk ${j}`).join("\n\n");
+    await Promise.all(paths.map((p, i) => m.memory.write({ name: `agent${i}`, grants: writer.grants }, p, `# N\n\n${body}\n`, "create")));
+    const hits = new Set((await m.memory.search(writer, "obelisk", undefined, 50)).results.map((r) => r.path));
+    expect([...hits].sort()).toEqual([...paths].sort());
+  });
+
   test("edit replaces text that matches exactly once", async () => {
     await m.memory.write(writer, "shared/e.md", "# E\n\nred red blue\n", "create");
     await expect(m.memory.edit(writer, "shared/e.md", "red", "x", "t")).rejects.toMatchObject({ code: "ambiguous" });

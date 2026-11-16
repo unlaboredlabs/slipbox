@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { SQL } from "bun";
 import { rmSync } from "node:fs";
 import type { Caller } from "../access";
+import { MEANING_FLOOR } from "../index/embed";
 import { parseMarkdown } from "../index/sections";
 import { type Env, WordsEmbedder, backend, makeEnv, openMemory, until } from "./helpers";
 
@@ -70,12 +71,13 @@ describe(`search reliability (${backend})`, () => {
     const [q] = await embedder.embed([query], "query");
     const sections = await opened[0].store.sectionsById((await opened[0].store.sectionRefs()).map((s) => s.id));
     const vectors = await embedder.embed(sections.map((s) => s.text), "query");
-    const expected = sections
+    const scored = sections
       .map((s, i) => ({ id: s.id, score: vectors[i].reduce((sum, x, k) => sum + x * q[k], 0) }))
-      .filter((h) => h.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 20);
+      .sort((a, b) => b.score - a.score);
+    const cut = Math.max(MEANING_FLOOR.min, scored[0].score - MEANING_FLOOR.belowTop);
+    const expected = scored.filter((h) => h.score >= cut).slice(0, 20);
     const got = (await memory.embeddings.search(query, () => true, 20))!;
+    expect(got.length).toBeGreaterThan(3);
     expect(got.map((h) => h.score.toFixed(5))).toEqual(expected.map((h) => h.score.toFixed(5)));
     expect(new Set(got.map((h) => h.id))).toEqual(new Set(expected.map((h) => h.id)));
   });
@@ -207,5 +209,29 @@ describe(`search reliability (${backend})`, () => {
     const scoped = (await memory.search(shop, "harbor", "projects")).results.map((r) => r.path);
     expect(scoped).toEqual(["projects/shop/b.md"]);
     expect((await memory.search(ada, "harbor", "projects/blog")).results.map((r) => r.path)).toEqual(["projects/blog/c.md"]);
+  });
+});
+
+describe(`words never miss a note while it is re-indexed (${backend})`, () => {
+  test("a note edited while its search waits on the model is still found by words", async () => {
+    const env = await makeEnv();
+    const slow = new WordsEmbedder();
+    const { memory, close } = await openMemory(env, slow);
+    try {
+      await memory.write(ada, "shared/stable.md", "# Stable\n\nThe word zeppelin stays in this note.\n", "create");
+      await memory.embeddings.settle();
+      slow.queryDelay = 100; // the query embedding takes a while, as a real model's does
+      for (let i = 0; i < 3; i++) {
+        const search = memory.search(ada, "zeppelin");
+        await Bun.sleep(20);
+        // Re-indexing gives the note's sections new ids while the search waits on the model.
+        await memory.edit(ada, "shared/stable.md", "", `- entry ${i}\n`, `log ${i}`);
+        const r = await search;
+        expect(r.results.find((x) => x.path === "shared/stable.md")?.wordRank).toBe(1);
+      }
+    } finally {
+      await close();
+      await env.cleanup();
+    }
   });
 });

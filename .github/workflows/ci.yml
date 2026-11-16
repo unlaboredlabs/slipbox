@@ -58,9 +58,42 @@ jobs:
         env:
           TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
 
+  # Linux and macOS differ in ways that matter here (system SQLite, file
+  # watching, a symlinked temp folder), so the suite runs on macOS too.
+  test-macos:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      TEST_MODELS_DIR: ${{ github.workspace }}/.models
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock', 'web/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .models
+          key: models-bge-small-en-v1.5
+      - run: bun install --frozen-lockfile
+      - name: Test on SQLite
+        run: bun test
+
   build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, target: linux-x64 }
+          - { runner: macos-15, target: darwin-arm64 }
     uses: ./.github/workflows/build.yml
     with:
-      runner: ubuntu-24.04
-      target: linux-x64
+      runner: ${{ matrix.runner }}
+      target: ${{ matrix.target }}
       ref: ${{ github.sha }}
