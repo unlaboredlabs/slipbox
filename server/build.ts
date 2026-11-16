@@ -137,7 +137,6 @@ const result = await Bun.build({
   entrypoints: [join(root, "server/cli.ts")],
   compile: { target: target as any, outfile },
   minify: true,
-  sourcemap: "linked",
   plugins: [plugin],
 });
 if (!result.success) {

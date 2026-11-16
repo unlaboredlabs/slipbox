@@ -1,5 +1,5 @@
 // Serves the built dashboard: embedded in the compiled program, or from web/dist
-// when running from source. Unknown paths fall back to index.html (an SPA).
+// when running from source. Page navigations to unknown paths get index.html (an SPA).
 import { existsSync, statSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import { NAME } from "./name";
@@ -32,10 +32,12 @@ export function serveWeb(req: Request): Response {
     const immutable = pathname.startsWith("/assets/");
     return new Response(file, { headers: { "Cache-Control": immutable ? "public, max-age=31536000, immutable" : "no-cache" } });
   }
-  if (extname(pathname) && pathname !== "/") return new Response("Not found", { status: 404 });
+  // Page navigations (which may carry a note path like /files/shared/a.md) get the app; missing assets get a 404.
+  const navigation = (req.headers.get("accept") ?? "").includes("text/html");
+  if (!navigation && extname(pathname)) return new Response("Not found", { status: 404 });
   const index = find("/index.html");
   if (index) return new Response(index, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache" } });
-  return new Response(`${NAME} is running. The dashboard is not built: run "bun run build:web".\n`, {
+  return new Response(`${NAME} is running. The dashboard is not built: run "bun run build".\n`, {
     headers: { "Content-Type": "text/plain; charset=utf-8" },
   });
 }
