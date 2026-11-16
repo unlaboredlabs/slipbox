@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createColumnHelper, getCoreRowModel, useReactTable } from "@tanstack/react-table";
@@ -32,15 +32,8 @@ type Dialogs = { kind: "create" } | { kind: "edit"; agent: Agent } | { kind: "re
 
 const column = createColumnHelper<Agent>();
 
-function AgentsPage() {
-  const agents = useQuery({ queryKey: AGENTS_KEY, queryFn: api.agents, refetchInterval: 30_000 });
-  const [dialog, setDialog] = useState<Dialogs>(null);
-  const close = () => setDialog(null);
-
-  // Active agents first, then by name.
-  const rows = [...(agents.data?.agents ?? [])].sort((a, b) => Number(a.revoked) - Number(b.revoked) || a.name.localeCompare(b.name));
-
-  const columns = [
+function agentColumns(open: (dialog: Dialogs) => void) {
+  return [
     column.accessor("name", { header: "Name", meta: { width: 180 }, cell: ({ getValue }) => <span className="font-medium">{getValue()}</span> }),
     column.accessor("grants", {
       header: "Grants",
@@ -62,7 +55,7 @@ function AgentsPage() {
     }),
     column.display({
       id: "actions",
-      meta: { width: 48 },
+      meta: { width: 56 },
       cell: ({ row }) =>
         row.original.revoked ? null : (
           <DropdownMenu>
@@ -72,11 +65,11 @@ function AgentsPage() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={() => setDialog({ kind: "edit", agent: row.original })}>
+              <DropdownMenuItem onSelect={() => open({ kind: "edit", agent: row.original })}>
                 <PencilIcon />
                 Edit grants
               </DropdownMenuItem>
-              <DropdownMenuItem variant="destructive" onSelect={() => setDialog({ kind: "revoke", agent: row.original })}>
+              <DropdownMenuItem variant="destructive" onSelect={() => open({ kind: "revoke", agent: row.original })}>
                 <BanIcon />
                 Revoke
               </DropdownMenuItem>
@@ -85,8 +78,22 @@ function AgentsPage() {
         ),
     }),
   ];
+}
 
-  const table = useReactTable({ data: rows, columns, getCoreRowModel: getCoreRowModel(), getRowId: (a) => a.id });
+function AgentsPage() {
+  const agents = useQuery({ queryKey: AGENTS_KEY, queryFn: api.agents, refetchInterval: 30_000 });
+  const [dialog, setDialog] = useState<Dialogs>(null);
+  const close = () => setDialog(null);
+
+  // Table data and columns must keep their identity between renders: new arrays make
+  // TanStack Table reset its state, which renders again, which never ends.
+  const rows = useMemo(
+    () => [...(agents.data?.agents ?? [])].sort((a, b) => Number(a.revoked) - Number(b.revoked) || a.name.localeCompare(b.name)),
+    [agents.data],
+  );
+  const columns = useMemo(() => agentColumns(setDialog), []);
+
+  const table = useReactTable({ data: rows, columns, getCoreRowModel: getCoreRowModel(), autoResetPageIndex: false, getRowId: (a) => a.id });
 
   return (
     <>
@@ -184,9 +191,10 @@ function CreateKey({ onDone }: { onDone: () => void }) {
 function ShowKey({ name, secret, onDone }: { name: string; secret: string; onDone: () => void }) {
   const [copied, setCopied] = useState(false);
   async function copy() {
-    await navigator.clipboard.writeText(secret);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1600);
+    if (await copyText(secret)) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    }
   }
   return (
     <DialogContent onInteractOutside={(e) => e.preventDefault()}>
@@ -194,8 +202,8 @@ function ShowKey({ name, secret, onDone }: { name: string; secret: string; onDon
         <DialogTitle>Key for {name}</DialogTitle>
         <DialogDescription>It won't be shown again.</DialogDescription>
       </DialogHeader>
-      <div className="flex items-center gap-1 rounded-lg bg-muted py-1 pr-1 pl-3">
-        <code className="min-w-0 flex-1 truncate font-mono text-[12.5px] select-all">{secret}</code>
+      <div className="flex min-w-0 items-center gap-2 rounded-lg bg-muted py-1.5 pr-1.5 pl-3">
+        <code className="min-w-0 flex-1 font-mono text-[12.5px] leading-relaxed break-all select-all">{secret}</code>
         <Button variant="ghost" size="sm" onClick={copy} className="text-foreground">
           {copied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}
           {copied ? "Copied" : "Copy"}
@@ -206,6 +214,24 @@ function ShowKey({ name, secret, onDone }: { name: string; secret: string; onDon
       </DialogFooter>
     </DialogContent>
   );
+}
+
+/** The clipboard API only exists on secure origins; plain http on a LAN address needs the old way. */
+async function copyText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.append(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    area.remove();
+    return ok;
+  }
 }
 
 function EditGrants({ agent, onDone }: { agent: Agent; onDone: () => void }) {

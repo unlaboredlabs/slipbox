@@ -132,7 +132,7 @@ function ActivityPage() {
   const actions = useMemo(() => [...new Set(data?.map((e) => e.action) ?? [])].sort(), [data]);
   const rows = useMemo(() => (data ?? []).filter((e) => (!agent || e.agent === agent) && (!action || e.action === action)), [data, agent, action]);
 
-  const table = useReactTable({ data: rows, columns, getCoreRowModel: getCoreRowModel(), getRowId: (e) => String(e.id) });
+  const table = useReactTable({ data: rows, columns, getCoreRowModel: getCoreRowModel(), autoResetPageIndex: false, getRowId: (e) => String(e.id) });
   const setFilter = (patch: ActivitySearch) => navigate({ search: (prev) => ({ ...prev, ...patch }), replace: true });
 
   return (
