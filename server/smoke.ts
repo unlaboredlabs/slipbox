@@ -17,8 +17,8 @@ if (!process.argv[2]) {
 const dir = mkdtempSync(join(tmpdir(), `${NAME}-smoke-`));
 const port = 20000 + Math.floor(Math.random() * 20000);
 const token = "smoke-admin-token";
-const env = { ...process.env, CONFIG_FILE: join(dir, "config.env") };
-writeFileSync(env.CONFIG_FILE, `ADMIN_TOKEN=${token}\nDATA_DIR=${join(dir, "data")}\nPORT=${port}\n`);
+const env = { ...process.env, SLIPBOX_CONFIG_FILE: join(dir, "config.env") };
+writeFileSync(env.SLIPBOX_CONFIG_FILE, `ADMIN_TOKEN=${token}\nDATA_DIR=${join(dir, "data")}\nPORT=${port}\n`);
 const url = `http://127.0.0.1:${port}`;
 
 async function cli(...args: string[]): Promise<string> {
