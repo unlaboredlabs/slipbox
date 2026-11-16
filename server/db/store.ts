@@ -69,6 +69,11 @@ export abstract class Store {
     await this.sql.close();
   }
 
+  /** Runs fn in a transaction. Keep them short: on SQLite, other processes wait for it. */
+  protected transaction<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
+    return this.sql.begin(fn) as Promise<T>;
+  }
+
   /** Runs a script of statements separated by semicolons (none inside literals). */
   protected async exec(script: string) {
     for (const stmt of script.split(";")) if (stmt.trim()) await this.sql.unsafe(stmt);
@@ -94,7 +99,7 @@ export abstract class Store {
 
   /** Replaces a doc and its sections. Returns the new section ids and the text hashes that were dropped. */
   async putDoc(doc: Doc, sections: Section[]): Promise<{ ids: number[]; dropped: string[] }> {
-    return this.sql.begin(async (tx) => {
+    return this.transaction(async (tx) => {
       const old = await tx`select text_hash from sections where doc_path = ${doc.path}`;
       await this.deleteSections(tx, doc.path);
       await tx`insert into docs (path, title, summary, hash, bytes, updated_at)
@@ -110,7 +115,7 @@ export abstract class Store {
   }
 
   async deleteDoc(path: string): Promise<string[]> {
-    return this.sql.begin(async (tx) => {
+    return this.transaction(async (tx) => {
       const old = await tx`select text_hash from sections where doc_path = ${path}`;
       await this.deleteSections(tx, path);
       await tx`delete from docs where path = ${path}`;
@@ -179,7 +184,7 @@ export abstract class Store {
   // Agents and grants
 
   async createAgent(name: string, keyHash: string, grants: Grant[]): Promise<Agent> {
-    const id = await this.sql.begin(async (tx) => {
+    const id = await this.transaction(async (tx) => {
       const [row] = await tx`insert into agents (name, key_hash, created_at, revoked)
         values (${name}, ${keyHash}, ${now()}, 0) returning id`;
       for (const g of grants) {
@@ -209,7 +214,7 @@ export abstract class Store {
   }
 
   async updateAgent(id: number, change: { grants?: Grant[]; revoked?: boolean }) {
-    await this.sql.begin(async (tx) => {
+    await this.transaction(async (tx) => {
       if (change.revoked !== undefined) {
         await tx`update agents set revoked = ${change.revoked ? 1 : 0} where id = ${id}`;
       }
