@@ -24,8 +24,9 @@ async function call(name: string, args: Record<string, unknown>): Promise<string
   return text;
 }
 
-function check(ok: unknown, what: string) {
-  if (!ok) throw new Error(`FAILED: ${what}`);
+/** Fails with `what`, and with what the server answered, so a failure on CI explains itself. */
+function check(ok: unknown, what: string, got?: unknown) {
+  if (!ok) throw new Error(`FAILED: ${what}${got === undefined ? "" : `\ngot: ${JSON.stringify(got, null, 2)}`}`);
   console.log(`ok  ${what}`);
 }
 
@@ -37,7 +38,7 @@ const written = JSON.parse(await call("write", { path, content: note, why: "e2e:
 check(/^[0-9a-f]{40}$/.test(written.commit), `write ${path} is a commit`);
 
 const words = JSON.parse(await call("search", { query: "tuesday smoke tests", path: "agents/e2e" }));
-check(words.results[0]?.path === path && words.results[0].wordRank === 1, "search by a word finds it");
+check(words.results[0]?.path === path && words.results[0].wordRank === 1, "search by a word finds it", words);
 
 if (!wordsOnly) {
   // The embedding is queued after the write; give it a moment to land.
@@ -47,7 +48,7 @@ if (!wordsOnly) {
     hit = r.results.find((x: any) => x.path === path);
     if (!hit?.meaningRank) await Bun.sleep(300);
   }
-  check(hit?.meaningRank === 1 && hit.wordRank === null, "search by a paraphrase finds it by meaning alone");
+  check(hit?.meaningRank === 1 && hit.wordRank === null, "search by a paraphrase finds it by meaning alone", hit);
 }
 
 await call("edit", { path, old: "every Tuesday morning", new: "every Thursday afternoon", why: "e2e: moved the release day" });
