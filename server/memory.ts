@@ -292,27 +292,28 @@ export class Memory {
 
   /** Brings the index in line with the files, by content hash, and commits outside changes. */
   async reconcileAll() {
-    const known = await this.store.docHashes();
-    const seen = new Set<string>();
-    for (const path of this.files.allFiles()) {
-      seen.add(path);
-      await this.locks.run(path, async () => {
-        const content = await this.files.read(path);
-        if (content !== null && known.get(path) !== versionOf(content)) await this.indexFile(path, content);
-      });
-    }
-    for (const path of known.keys()) {
-      if (!seen.has(path)) await this.locks.run(path, () => this.indexFile(path, null));
-    }
+    const paths = new Set([...this.files.allFiles(), ...(await this.store.docHashes()).keys()]);
+    for (const path of paths) await this.syncPath(path);
     if (await this.git.dirty()) await this.git.commit([], OUTSIDE, `Changes made outside ${NAME}`);
   }
 
   private async reconcilePath(path: string) {
+    await this.syncPath(path);
+    await this.locks.run(path, async () => {
+      if (await this.git.dirty(path)) await this.git.commit([path], OUTSIDE, `Change to ${path} made outside ${NAME}`);
+    });
+  }
+
+  /**
+   * Re-indexes one file if it differs from the index. The comparison is made
+   * under the file's lock with the index as it is then, so a file the server
+   * has just written itself is left alone.
+   */
+  private async syncPath(path: string) {
     await this.locks.run(path, async () => {
       const content = await this.files.read(path);
       const known = await this.store.getDoc(path);
       if (content === null ? known !== null : known?.hash !== versionOf(content)) await this.indexFile(path, content);
-      if (await this.git.dirty(path)) await this.git.commit([path], OUTSIDE, `Change to ${path} made outside ${NAME}`);
     });
   }
 
