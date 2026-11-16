@@ -50,11 +50,11 @@ describe(`CLI against a busy server (${backend})`, () => {
 
     const vars = {
       ...process.env,
-      CONFIG_FILE: join(env.dir, "config.env"),
-      DATA_DIR: env.dataDir,
-      DATABASE_URL: env.dbUrl,
-      ADMIN_TOKEN: "busy-token",
-      PORT: "1",
+      SLIPBOX_CONFIG_FILE: join(env.dir, "config.env"),
+      SLIPBOX_DATA_DIR: env.dataDir,
+      SLIPBOX_DATABASE_URL: env.dbUrl,
+      SLIPBOX_ADMIN_TOKEN: "busy-token",
+      SLIPBOX_PORT: "1",
     };
     const cli = async (...args: string[]) => {
       const proc = Bun.spawn(["bun", CLI, ...args], { env: vars, stdout: "pipe", stderr: "pipe" });
