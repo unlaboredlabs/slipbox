@@ -44,12 +44,13 @@ describe(`agents stay fast (${backend})`, () => {
   });
 
   test("reads stay fast while the model embeds a batch on its own thread", async () => {
+    // A backlog, as after an import or a model change: 96 sections on disk before the start, six batches,
+    // all queued at once (written one by one, a slow machine would embed them as they come).
+    mkdirSync(join(env.dataDir, "shared"), { recursive: true });
+    writeFileSync(join(env.dataDir, "shared/small.md"), "# Small\n\nA small note to read.\n");
+    for (let i = 0; i < 95; i++) writeFileSync(join(env.dataDir, `shared/n${i}.md`), `# Note ${i}\n\nText number ${i}.\n`);
     m = await openMemory(env, new WorkerEmbedder("test/slow", env.dir, SLOW_WORKER));
-    await m.memory.write(ada, "shared/small.md", "# Small\n\nA small note to read.\n", "create");
-    await m.memory.embeddings.settle();
-    // A backlog, as after an import or a model change: 40 sections, three batches.
-    for (let i = 0; i < 40; i++) await m.memory.write(ada, `shared/n${i}.md`, `# Note ${i}\n\nText number ${i}.\n`, "create");
-    expect(m.memory.embeddings.status().queued).toBeGreaterThan(16);
+    expect(m.memory.embeddings.status().queued).toBeGreaterThan(48);
     const reads: number[] = [];
     const worst = await stall(async () => {
       const end = performance.now() + 2 * SLOW_MS;
