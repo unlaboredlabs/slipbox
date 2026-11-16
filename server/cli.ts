@@ -166,6 +166,7 @@ async function main(argv: string[]) {
   if (!cmd || cmd === "help" || cmd === "--help" || cmd === "-h") return console.log(HELP);
   if (cmd === "version" || cmd === "--version" || cmd === "-v") return console.log(versionLine(NAME));
   const config = loadConfig();
+  if (config.created && cmd !== "serve") console.log(`Created ${config.configFile} with a generated admin token.`);
   switch (cmd) {
     case "serve":
       return serve(config);
