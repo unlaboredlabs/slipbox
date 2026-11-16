@@ -41,14 +41,14 @@ function AgentsPage() {
   const rows = [...(agents.data?.agents ?? [])].sort((a, b) => Number(a.revoked) - Number(b.revoked) || a.name.localeCompare(b.name));
 
   const columns = [
-    column.accessor("name", { header: "Name", size: 180, cell: ({ getValue }) => <span className="font-medium">{getValue()}</span> }),
+    column.accessor("name", { header: "Name", meta: { width: 180 }, cell: ({ getValue }) => <span className="font-medium">{getValue()}</span> }),
     column.accessor("grants", {
       header: "Grants",
       cell: ({ getValue }) => <Grants grants={getValue()} />,
     }),
     column.accessor("lastSeenAt", {
       header: "Last seen",
-      size: 130,
+      meta: { width: 130 },
       cell: ({ getValue }) => (
         <Hint label={getValue() ? formatDate(getValue()) : undefined}>
           <span className="text-muted-foreground">{timeAgo(getValue())}</span>
@@ -57,12 +57,12 @@ function AgentsPage() {
     }),
     column.accessor("revoked", {
       header: "State",
-      size: 100,
+      meta: { width: 100 },
       cell: ({ getValue }) => <span className={cn(getValue() ? "text-muted-foreground" : "text-foreground/80")}>{getValue() ? "Revoked" : "Active"}</span>,
     }),
     column.display({
       id: "actions",
-      size: 48,
+      meta: { width: 48 },
       cell: ({ row }) =>
         row.original.revoked ? null : (
           <DropdownMenu>

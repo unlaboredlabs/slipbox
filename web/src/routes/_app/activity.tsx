@@ -69,7 +69,7 @@ const column = createColumnHelper<ActivityEvent>();
 const columns = [
   column.accessor("at", {
     header: "Time",
-    size: 120,
+    meta: { width: 120 },
     cell: ({ getValue }) => {
       const at = getValue();
       return (
@@ -81,16 +81,20 @@ const columns = [
       );
     },
   }),
-  column.accessor("agent", { header: "Agent", size: 150, cell: ({ getValue }) => <span className="font-medium">{getValue()}</span> }),
-  column.accessor("action", { header: "Action", size: 110, cell: ({ getValue }) => <span className="text-muted-foreground">{getValue()}</span> }),
+  column.accessor("agent", { header: "Agent", meta: { width: 150 }, cell: ({ getValue }) => <span className="font-medium">{getValue()}</span> }),
+  column.accessor("action", { header: "Action", meta: { width: 110 }, cell: ({ getValue }) => <span className="text-muted-foreground">{getValue()}</span> }),
   column.display({
     id: "target",
     header: "Path or query",
-    cell: ({ row }) => <Target event={row.original} />,
+    cell: ({ row }) => (
+      <span className="block truncate">
+        <Target event={row.original} />
+      </span>
+    ),
   }),
   column.accessor("ok", {
     header: () => <span className="sr-only">Result</span>,
-    size: 44,
+    meta: { width: 44 },
     cell: ({ getValue }) => (
       <Hint label={getValue() ? "Succeeded" : "Failed"}>
         <span className="flex justify-center">

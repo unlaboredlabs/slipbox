@@ -153,7 +153,7 @@ function HistoryPanel({ path, selected, onClose }: { path: string; selected?: st
           <XIcon className="size-4" />
         </Button>
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-6">
+      <div className="min-h-0 flex-1 overflow-y-auto pr-3 pl-2 pb-6">
         {history.isPending ? (
           <div className="flex flex-col gap-4 px-3 pt-2">
             {[0, 1, 2].map((i) => (

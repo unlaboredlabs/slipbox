@@ -37,7 +37,7 @@ export function formatDate(iso: string | null | undefined): string {
   return iso ? full.format(new Date(iso)) : "";
 }
 
-const clock = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const clock = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" });
 export function formatTime(iso: string): string {
   return clock.format(new Date(iso));
 }
