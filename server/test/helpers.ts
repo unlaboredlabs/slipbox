@@ -75,6 +75,7 @@ export class WordsEmbedder implements Embedder {
   fail: ("query" | "passage")[] = [];
   failLoad = false;
   hang = false;
+  queryDelay = 0; // milliseconds a query embedding takes
   embedded: string[] = [];
 
   constructor(model = "test/words") {
@@ -88,6 +89,7 @@ export class WordsEmbedder implements Embedder {
 
   async embed(texts: string[], kind: "query" | "passage") {
     if (this.fail.includes(kind)) throw new Error("embedding failed");
+    if (kind === "query" && this.queryDelay) await Bun.sleep(this.queryDelay);
     if (kind === "passage") this.embedded.push(...texts);
     return texts.map((t) => {
       const v = new Float32Array(64);

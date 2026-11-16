@@ -34,11 +34,12 @@ export async function hybridSearch(
 ): Promise<SearchResponse> {
   const terms = queryTerms(query);
   const inScope = (path: string) => scope === null || scope.some((p) => path.startsWith(p));
-  const [wordIds, meaningHits] = await Promise.all([
-    store.wordSearch(terms, scope, CANDIDATES),
-    // Words never depend on vectors: any failure on the meaning side only drops its list.
-    embeddings.search(query, inScope, CANDIDATES).catch(() => null),
-  ]);
+  // Meaning first: it waits on the model, and a note can be re-indexed (with
+  // new section ids) meanwhile. The word search runs after, and returns whole
+  // rows, so what words find is never lost to such a change.
+  // Words never depend on vectors: any failure on the meaning side only drops its list.
+  const meaningHits = await embeddings.search(query, inScope, CANDIDATES).catch(() => null);
+  const wordRows = await store.wordSearch(terms, scope, CANDIDATES);
 
   const merged = new Map<number, { score: number; wordRank: number | null; meaningRank: number | null }>();
   const entry = (id: number) => {
@@ -46,8 +47,8 @@ export async function hybridSearch(
     if (!e) merged.set(id, (e = { score: 0, wordRank: null, meaningRank: null }));
     return e;
   };
-  wordIds.forEach((id, i) => {
-    const e = entry(id);
+  wordRows.forEach((row, i) => {
+    const e = entry(row.id);
     e.wordRank = i + 1;
     e.score += 1 / (RRF_K + i + 1);
   });
@@ -58,11 +59,13 @@ export async function hybridSearch(
   });
 
   const top = [...merged.entries()].sort((a, b) => b[1].score - a[1].score).slice(0, limit);
-  const rows = new Map((await store.sectionsById(top.map(([id]) => id))).map((r) => [r.id, r]));
+  const rows = new Map(wordRows.map((r) => [r.id, r]));
+  const missing = top.map(([id]) => id).filter((id) => !rows.has(id));
+  for (const r of await store.sectionsById(missing)) rows.set(r.id, r);
   const results: SearchResult[] = [];
   for (const [id, e] of top) {
     const r = rows.get(id);
-    if (!r || !inScope(r.docPath)) continue; // deleted since the vector scan
+    if (!r || !inScope(r.docPath)) continue; // a meaning hit deleted since the vector scan
     results.push({
       path: r.docPath,
       heading: r.heading,

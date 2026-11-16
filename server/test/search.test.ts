@@ -209,3 +209,27 @@ describe(`search reliability (${backend})`, () => {
     expect((await memory.search(ada, "harbor", "projects/blog")).results.map((r) => r.path)).toEqual(["projects/blog/c.md"]);
   });
 });
+
+describe(`words never miss a note while it is re-indexed (${backend})`, () => {
+  test("a note edited while its search waits on the model is still found by words", async () => {
+    const env = await makeEnv();
+    const slow = new WordsEmbedder();
+    const { memory, close } = await openMemory(env, slow);
+    try {
+      await memory.write(ada, "shared/stable.md", "# Stable\n\nThe word zeppelin stays in this note.\n", "create");
+      await memory.embeddings.settle();
+      slow.queryDelay = 100; // the query embedding takes a while, as a real model's does
+      for (let i = 0; i < 3; i++) {
+        const search = memory.search(ada, "zeppelin");
+        await Bun.sleep(20);
+        // Re-indexing gives the note's sections new ids while the search waits on the model.
+        await memory.edit(ada, "shared/stable.md", "", `- entry ${i}\n`, `log ${i}`);
+        const r = await search;
+        expect(r.results.find((x) => x.path === "shared/stable.md")?.wordRank).toBe(1);
+      }
+    } finally {
+      await close();
+      await env.cleanup();
+    }
+  });
+});
