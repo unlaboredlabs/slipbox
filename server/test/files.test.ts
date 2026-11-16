@@ -83,6 +83,8 @@ describe(`files and history (${backend})`, () => {
     expect(versions[1].version).toMatch(/^[0-9a-f]{64}$/);
     expect((await m.memory.read(writer, "shared/s.md", { version: versions[1].version! })).content).toBe("# S\n\none\n");
     expect((await m.memory.diff(writer, "shared/s.md", versions[1].commit, versions[0].commit)).diff).toContain("+two");
+    // The first version's diff, against nothing, as the dashboard shows it.
+    expect((await m.memory.diff(writer, "shared/s.md", undefined, versions[1].commit)).diff).toContain("+one");
   });
 
   test("appending to a note that does not exist is refused: it would have no title", async () => {

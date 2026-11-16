@@ -21,8 +21,11 @@ const LOG_FORMAT = "--format=%x1e%H%x1f%aI%x1f%an%x1f%s";
 
 /** A version or commit id, or a prefix of one: 40 characters, or 64 in a SHA-256 repository. */
 const HEX = /^[0-9a-f]{7,64}$/;
-/** Git's id for an empty tree, which every repository knows. */
-const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+/** Git's id for an empty tree, which every repository knows: SHA-1, and SHA-256. */
+const EMPTY_TREE = {
+  40: "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+  64: "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321",
+};
 
 /** Kept in .git/info/exclude, so a whole-tree commit takes in notes only, not stray files. */
 const EXCLUDE = `# ${NAME}: only notes are kept in history
@@ -35,7 +38,7 @@ const EXCLUDE = `# ${NAME}: only notes are kept in history
 export class Git {
   private locks = new Locks();
   /** Characters in a whole commit id: 40, or 64 in a SHA-256 repository. Read by init. */
-  private idLength = 40;
+  private idLength: 40 | 64 = 40;
 
   constructor(private root: string) {}
 
@@ -183,7 +186,7 @@ export class Git {
     for (const ref of from ? [from, to] : [to]) {
       if (!HEX.test(ref)) throw new UserError("bad_version", `"${ref}" is not a commit id.`);
     }
-    const { out } = await this.run(["diff", "--no-color", "--no-renames", from ?? EMPTY_TREE, to, "--", path], { ok: [0, 1] });
+    const { out } = await this.run(["diff", "--no-color", "--no-renames", from ?? EMPTY_TREE[this.idLength], to, "--", path], { ok: [0, 1] });
     return out;
   }
 }
