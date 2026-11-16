@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ADMIN } from "../access";
 import { openStore } from "../db";
+import { NAME } from "../name";
 import { type Env, backend, makeEnv, openMemory } from "./helpers";
 
 const CLI = join(import.meta.dir, "..", "cli.ts");
@@ -42,7 +43,7 @@ describe(`cli (${backend})`, () => {
     expect(created.code).toBe(0);
     const key = /Key \(shown once\): (sk_\S+)/.exec(created.out)?.[1];
     expect(key).toBeTruthy();
-    expect(created.out).toContain(`claude mcp add --transport http slipbox`);
+    expect(created.out).toContain(`claude mcp add --transport http ${NAME}`);
     expect((await cli("key", "create", "claude", "--read", "/")).code).toBe(1);
     expect((await cli("key", "create", "nogrants")).out).toContain("at least one --read or --write");
 

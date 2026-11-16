@@ -1,5 +1,5 @@
 // Builds the single program with `bun build --compile`:
-//   bun run build [--release] [--target bun-linux-arm64] [--outfile dist/slipbox] [--skip-web]
+//   bun run build [--release] [--target bun-linux-arm64] [--outfile dist/<name>] [--skip-web]
 //
 // - Builds web/ first when it exists, and embeds web/dist.
 // - Embeds the embedding runtime's native files (onnxruntime) for the target,

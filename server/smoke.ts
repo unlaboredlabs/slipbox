@@ -1,11 +1,12 @@
 // Smoke test of a compiled program, as CI runs it:
-//   bun server/smoke.ts dist/slipbox
+//   bun server/smoke.ts dist/<name>
 // Starts it with a fresh config and data folder, checks /api/health and the
 // dashboard, creates a key and runs the MCP end-to-end check (server/e2e.ts).
 // Meaning search must work unless the build has no embedding runtime.
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { NAME } from "./name";
 
 const bin = resolve(process.argv[2] ?? "");
 if (!process.argv[2]) {
@@ -13,7 +14,7 @@ if (!process.argv[2]) {
   process.exit(2);
 }
 
-const dir = mkdtempSync(join(tmpdir(), "slipbox-smoke-"));
+const dir = mkdtempSync(join(tmpdir(), `${NAME}-smoke-`));
 const port = 20000 + Math.floor(Math.random() * 20000);
 const token = "smoke-admin-token";
 const env = { ...process.env, CONFIG_FILE: join(dir, "config.env") };

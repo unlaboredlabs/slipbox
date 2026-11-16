@@ -2,9 +2,10 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { NAME } from "../name";
 import { embeddedWeb, serveWeb } from "../web";
 
-const dir = mkdtempSync(join(tmpdir(), "slipbox-web-"));
+const dir = mkdtempSync(join(tmpdir(), `${NAME}-web-`));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 test("serves the dashboard with an SPA fallback for page navigations", async () => {

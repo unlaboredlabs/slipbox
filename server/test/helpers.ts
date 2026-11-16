@@ -7,11 +7,12 @@ import { join } from "node:path";
 import { type Store, openStore } from "../db";
 import type { Embedder } from "../index/embed";
 import { Memory } from "../memory";
+import { NAME } from "../name";
 
 export const backend = process.env.TEST_DATABASE_URL ? "postgres" : "sqlite";
 
 /** Where the real embedding model is cached between test runs. */
-export const MODELS_DIR = process.env.TEST_MODELS_DIR || join(tmpdir(), "slipbox-test-models");
+export const MODELS_DIR = process.env.TEST_MODELS_DIR || join(tmpdir(), `${NAME}-test-models`);
 
 export interface Env {
   dir: string;
@@ -21,7 +22,7 @@ export interface Env {
 }
 
 export async function makeEnv(): Promise<Env> {
-  const dir = mkdtempSync(join(tmpdir(), "slipbox-test-"));
+  const dir = mkdtempSync(join(tmpdir(), `${NAME}-test-`));
   const admin = process.env.TEST_DATABASE_URL;
   let dbUrl = join(dir, "data.db");
   let dropDb = async () => {};
