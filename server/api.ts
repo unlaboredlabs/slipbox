@@ -21,7 +21,7 @@ export function apiHandler(memory: Memory, adminToken: string) {
       },
     ],
     ["GET", /^\/api\/history$/, async (_r, u) => memory.history(ADMIN, need(u, "path"), int(u, "limit", 50))],
-    ["GET", /^\/api\/diff$/, async (_r, u) => memory.diff(ADMIN, need(u, "path"), need(u, "from"), need(u, "to"))],
+    ["GET", /^\/api\/diff$/, async (_r, u) => memory.diff(ADMIN, need(u, "path"), u.searchParams.get("from") || undefined, need(u, "to"))],
     [
       "POST",
       /^\/api\/restore$/,

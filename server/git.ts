@@ -13,6 +13,8 @@ export interface Version {
 }
 
 const HEX = /^[0-9a-f]{7,40}$/;
+/** Git's id for an empty tree, which every repository knows. */
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 export class Git {
   private locks = new Locks();
@@ -96,12 +98,12 @@ export class Git {
     return { content: out, version: hit.version };
   }
 
-  /** Unified diff of one file between two commits from its history. */
-  async diff(path: string, from: string, to: string): Promise<string> {
-    for (const ref of [from, to]) {
+  /** Unified diff of one file between two commits; without `from`, against nothing (the file as created). */
+  async diff(path: string, from: string | undefined, to: string): Promise<string> {
+    for (const ref of from ? [from, to] : [to]) {
       if (!HEX.test(ref)) throw new UserError("bad_version", `"${ref}" is not a commit id.`);
     }
-    const { out } = await this.run(["diff", "--no-color", "--no-renames", from, to, "--", path], { ok: [0, 1] });
+    const { out } = await this.run(["diff", "--no-color", "--no-renames", from ?? EMPTY_TREE, to, "--", path], { ok: [0, 1] });
     return out;
   }
 }

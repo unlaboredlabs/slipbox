@@ -162,7 +162,7 @@ export class Memory {
     return { versions: await this.git.history(path, Math.min(Math.max(limit, 1), 1000)) };
   }
 
-  async diff(caller: Caller, path: string, from: string, to: string) {
+  async diff(caller: Caller, path: string, from: string | undefined, to: string) {
     path = filePath(path);
     requireRead(caller, path);
     return { diff: await this.git.diff(path, from, to) };
