@@ -12,9 +12,6 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  BUN_VERSION: 1.4.3
-
 jobs:
   test:
     runs-on: ubuntu-24.04
@@ -39,7 +36,7 @@ jobs:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: ${{ env.BUN_VERSION }}
+          bun-version-file: .bun-version
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.bun/install/cache
@@ -48,7 +45,7 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .models
-          key: models-bge-small-en-v1.5
+          key: models-bge-small-en-v1.5-ea104dacec62c0de699686887e3f920caeb4f3e3 # the revision pinned in server/index/embed.ts
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - name: Test on SQLite
@@ -71,7 +68,7 @@ jobs:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: ${{ env.BUN_VERSION }}
+          bun-version-file: .bun-version
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.bun/install/cache
@@ -80,7 +77,7 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .models
-          key: models-bge-small-en-v1.5
+          key: models-bge-small-en-v1.5-ea104dacec62c0de699686887e3f920caeb4f3e3 # the revision pinned in server/index/embed.ts
       - run: bun install --frozen-lockfile
       - name: Test on SQLite
         run: bun test

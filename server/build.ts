@@ -6,7 +6,7 @@
 //   which server/native.ts writes to disk on first use.
 // - Stubs `sharp`, an image library @huggingface/transformers imports but text
 //   embeddings never use.
-// - --release stamps the version: the number of commits on main, the commit and the date.
+// - --release stamps the version: the number of commits on main, the commit and its date.
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -38,7 +38,9 @@ async function run(cmd: string[], cwd = root): Promise<string> {
 const web = join(root, "web");
 if (!args["skip-web"] && existsSync(join(web, "package.json"))) {
   console.log("building web/ ...");
-  await run(["bun", "install", "--frozen-lockfile"], web).catch(() => run(["bun", "install"], web));
+  // A release ships exactly what web/bun.lock pins; a dev build may resolve afresh.
+  const install = run(["bun", "install", "--frozen-lockfile"], web);
+  await (args.release ? install : install.catch(() => run(["bun", "install"], web)));
   await run(["bun", "run", "build"], web);
 }
 const dist = join(web, "dist");
@@ -67,7 +69,7 @@ if (args.release) {
   version = {
     VERSION: await run(["git", "rev-list", "--count", "HEAD"]),
     COMMIT: await run(["git", "rev-parse", "--short=7", "HEAD"]),
-    BUILD_DATE: new Date().toISOString().slice(0, 10),
+    BUILD_DATE: await run(["git", "show", "-s", "--format=%cs", "HEAD"]), // the commit's date, so every platform agrees
   };
 }
 

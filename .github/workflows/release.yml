@@ -1,5 +1,8 @@
 # A rolling release: every push to main that passes CI replaces the assets of
 # the one prerelease tagged `edge`. The version is the number of commits on main.
+# The new assets are uploaded under temporary names first and then renamed over
+# the old ones, so a failed upload leaves the old release whole and the switch
+# takes about a second (install.sh and `update` retry through it).
 name: Release
 
 on:
@@ -39,9 +42,11 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: write
+      id-token: write # build provenance
+      attestations: write
     env:
       GH_TOKEN: ${{ github.token }}
       SHA: ${{ github.event.workflow_run.head_sha }}
@@ -50,28 +55,65 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
+      # A re-run of an older CI or Release run must not move edge backwards.
+      - name: Still main's tip?
+        id: tip
+        run: |
+          git fetch -q origin main
+          if [ "$(git rev-parse origin/main)" = "$SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::$SHA is no longer main's tip; not publishing."
+          fi
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.tip.outputs.current == 'true'
         with:
           path: assets
           pattern: ${{ env.NAME }}-*
           merge-multiple: true
-      - name: Checksums and version
+      - name: Checksums, version and licenses
+        if: steps.tip.outputs.current == 'true'
         run: |
+          cp THIRD_PARTY_LICENSES assets/
           cd assets
           sha256sum "$NAME"-* > checksums.txt
           git rev-list --count HEAD > version
           cat checksums.txt version
-      - name: Move the edge tag and replace the release assets
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        if: steps.tip.outputs.current == 'true'
+        with:
+          subject-path: assets/${{ env.NAME }}-*
+      - name: Replace the edge release's assets and move its tag
+        if: steps.tip.outputs.current == 'true'
         run: |
+          retry() { for i in 1 2 3; do "$@" && return 0; echo "retrying in $((i * 10))s: $*"; sleep $((i * 10)); done; return 1; }
           version="$(cat assets/version)"
           short="$(git rev-parse --short=7 HEAD)"
           date="$(git show -s --format=%cs HEAD)"
           notes="Version $version, built from $short on $date. Install or update: curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | sh"
-          git tag -f edge "$SHA"
-          git push -f origin refs/tags/edge
-          if gh release view edge >/dev/null 2>&1; then
-            gh release edit edge --title "$NAME $version" --notes "$notes" --prerelease
-          else
+          if ! gh release view edge >/dev/null 2>&1; then
+            git tag -f edge "$SHA"
+            git push -f origin refs/tags/edge
             gh release create edge --title "$NAME $version" --notes "$notes" --prerelease --verify-tag
           fi
-          gh release upload edge assets/* --clobber
+
+          # 1. Upload under temporary names; the live assets stay as they are.
+          mkdir staged
+          for f in assets/*; do cp "$f" "staged/$(basename "$f").next"; done
+          retry gh release upload edge staged/* --clobber
+
+          # 2. Rename each over the live one: binaries, then checksums, then
+          #    the version `update` reads first.
+          api="repos/${{ github.repository }}/releases"
+          gh api "$api/tags/edge" --jq '.assets[] | "\(.id) \(.name)"' > ids
+          for name in $(cd assets && ls "$NAME"-*) THIRD_PARTY_LICENSES checksums.txt version; do
+            new="$(awk -v n="$name.next" '$2 == n { print $1 }' ids)"
+            old="$(awk -v n="$name" '$2 == n { print $1 }' ids)"
+            [ -n "$new" ] || { echo "::error::$name.next was not uploaded"; exit 1; }
+            [ -z "$old" ] || retry gh api -X DELETE "$api/assets/$old" --silent
+            retry gh api -X PATCH "$api/assets/$new" -f name="$name" --silent
+          done
+
+          git tag -f edge "$SHA"
+          git push -f origin refs/tags/edge
+          gh release edit edge --title "$NAME $version" --notes "$notes" --prerelease
