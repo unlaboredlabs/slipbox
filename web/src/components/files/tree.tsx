@@ -6,7 +6,7 @@ import { api, type TreeEntry } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Hint } from "@/components/ui/tooltip";
-import { ErrorState, Placeholder } from "@/components/states";
+import { Placeholder } from "@/components/states";
 
 /** Folders of a file path: "a/b/c.md" gives ["a/", "a/b/"]. */
 function ancestors(path?: string) {
@@ -56,7 +56,13 @@ function Folder({ path, depth, open, toggle, selected }: FolderProps) {
       </div>
     );
   }
-  if (error) return depth ? <p className="py-1 text-xs text-destructive" style={{ paddingLeft: indent(depth) }}>{error.message}</p> : <ErrorState error={error} onRetry={refetch} />;
+  if (error) {
+    return (
+      <button type="button" onClick={() => refetch()} className="py-1 text-left text-xs text-muted-foreground hover:text-foreground" style={{ paddingLeft: indent(depth) }}>
+        {error.message} · <span className="text-link">Retry</span>
+      </button>
+    );
+  }
   if (!data.entries.length) return depth ? null : <Placeholder title="No files yet" />;
 
   return data.entries.map((entry) =>

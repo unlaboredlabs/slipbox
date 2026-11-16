@@ -137,6 +137,7 @@ async function request<T>(
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     const error = data?.error;
+    if (!error && res.status >= 502 && res.status <= 504) throw new ApiError(res.status, "network", "Can't reach the server");
     throw new ApiError(res.status, error?.code ?? "http", error?.message ?? `${res.status} ${res.statusText}`);
   }
   return data as T;

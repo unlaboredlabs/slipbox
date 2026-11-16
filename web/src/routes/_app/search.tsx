@@ -46,7 +46,7 @@ function SearchPage() {
         <IndexHealth />
       </PageHeader>
       <div className="min-h-0 flex-1 overflow-y-auto pb-16">
-        <div className="mx-auto w-full max-w-[760px] px-6 pt-2">
+        <div className="w-full max-w-[820px] px-6 pt-2">
           <form onSubmit={submit} className="flex gap-2">
             <div className="relative flex-1">
               <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -66,7 +66,7 @@ function SearchPage() {
               aria-label="Path prefix"
               spellCheck={false}
               autoCapitalize="off"
-              className="h-10 w-48 rounded-lg font-mono text-[12.5px]"
+              className="h-10 w-48 rounded-lg text-sm"
             />
             <button type="submit" className="sr-only">
               Search
@@ -81,7 +81,7 @@ function SearchPage() {
             ) : (
               <>
                 {results.data.meaning === "unavailable" && (
-                  <p className="mb-3 flex items-center gap-2 px-3 text-[13px] text-muted-foreground">
+                  <p className="mb-3 flex items-center gap-2 text-[13px] text-muted-foreground">
                     <CircleAlertIcon className="size-3.5" />
                     Meaning search unavailable, matched by words only
                   </p>
@@ -89,7 +89,7 @@ function SearchPage() {
                 {results.data.results.length === 0 ? (
                   <Placeholder icon={SearchXIcon} title="No matches" />
                 ) : (
-                  <ol className="flex flex-col gap-1">
+                  <ol className="-mx-3 flex flex-col gap-1">
                     {results.data.results.map((r) => (
                       <li key={`${r.path}:${r.startLine}`}>
                         <Result result={r} />
