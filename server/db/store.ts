@@ -57,8 +57,11 @@ export abstract class Store {
 
   /** Creates the tables if missing. */
   abstract init(): Promise<void>;
-  /** Ranked section ids matching the words of a query, best first. */
-  abstract wordSearch(terms: string[], scope: Scope, limit: number): Promise<number[]>;
+  /**
+   * Sections matching the words of a query, best first. Whole rows, not ids:
+   * a note re-indexed while a search is running gets new section ids.
+   */
+  abstract wordSearch(terms: string[], scope: Scope, limit: number): Promise<SectionRow[]>;
   /** Inserts sections and their word-index rows, returning their ids. */
   protected abstract insertSections(tx: SQL, doc: Doc, sections: Section[]): Promise<number[]>;
   protected abstract deleteSections(tx: SQL, path: string): Promise<void>;
@@ -68,6 +71,9 @@ export abstract class Store {
   async close() {
     await this.sql.close();
   }
+
+  /** Serialises transactions on one doc, across processes. SQLite's write lock already does. */
+  protected async lockDoc(_tx: SQL, _path: string) {}
 
   /** Runs fn in a transaction. Keep them short: on SQLite, other processes wait for it. */
   protected transaction<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
@@ -100,6 +106,7 @@ export abstract class Store {
   /** Replaces a doc and its sections. Returns the new section ids and the text hashes that were dropped. */
   async putDoc(doc: Doc, sections: Section[]): Promise<{ ids: number[]; dropped: string[] }> {
     return this.transaction(async (tx) => {
+      await this.lockDoc(tx, doc.path);
       const old = await tx`select text_hash from sections where doc_path = ${doc.path}`;
       await this.deleteSections(tx, doc.path);
       await tx`insert into docs (path, title, summary, hash, bytes, updated_at)
@@ -116,6 +123,7 @@ export abstract class Store {
 
   async deleteDoc(path: string): Promise<string[]> {
     return this.transaction(async (tx) => {
+      await this.lockDoc(tx, path);
       const old = await tx`select text_hash from sections where doc_path = ${path}`;
       await this.deleteSections(tx, path);
       await tx`delete from docs where path = ${path}`;
@@ -136,15 +144,7 @@ export abstract class Store {
       `select * from sections where id in (${ids.map((_, i) => this.param(i)).join(", ")})`,
       ids,
     );
-    return rows.map((r: any) => ({
-      id: Number(r.id),
-      docPath: r.doc_path,
-      heading: r.heading,
-      startLine: Number(r.start_line),
-      endLine: Number(r.end_line),
-      text: r.text,
-      textHash: r.text_hash,
-    }));
+    return rows.map(toSection);
   }
 
   async counts(): Promise<{ sections: number; docs: number }> {
@@ -295,6 +295,18 @@ function toAgent(r: any, grants: any[]): Agent {
     grants: grants
       .filter((g) => Number(g.agent_id) === Number(r.id))
       .map((g) => ({ prefix: g.prefix, mode: g.mode })),
+  };
+}
+
+export function toSection(r: any): SectionRow {
+  return {
+    id: Number(r.id),
+    docPath: r.doc_path,
+    heading: r.heading,
+    startLine: Number(r.start_line),
+    endLine: Number(r.end_line),
+    text: r.text,
+    textHash: r.text_hash,
   };
 }
 

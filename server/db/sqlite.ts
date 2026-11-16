@@ -1,9 +1,10 @@
 import { SQL } from "bun";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { Locks } from "../files";
 import type { Section } from "../index/sections";
 import { fts5Query } from "../index/words";
-import { type Doc, type Scope, Store } from "./store";
+import { type Doc, type Scope, type SectionRow, Store, toSection } from "./store";
 
 const INDEX_SCHEMA = `
 create table if not exists docs (
@@ -68,6 +69,22 @@ create table if not exists events (
 );
 ${INDEX_SCHEMA}`;
 
+/**
+ * Bun's SQLite client has one connection per process, so a query run while a
+ * transaction is open would see (and join) its unfinished work. Queueing every
+ * query and transaction makes each transaction atomic to the rest of the
+ * process. Inside a transaction, use its `tx`, never the store's `sql`.
+ */
+function oneAtATime(sql: SQL): SQL {
+  const locks = new Locks();
+  const run = <T>(fn: () => T) => locks.run("db", async () => await fn());
+  const queued: any = (strings: TemplateStringsArray, ...values: unknown[]) => run(() => sql(strings, ...values));
+  queued.unsafe = (query: string, params?: unknown[]) => run(() => sql.unsafe(query, params));
+  queued.begin = (...args: unknown[]) => run(() => (sql.begin as any)(...args));
+  queued.close = () => sql.close();
+  return queued as SQL;
+}
+
 // Column weights for bm25(): title, heading, text.
 const WEIGHTS = "4.0, 2.0, 1.0";
 
@@ -76,7 +93,7 @@ export class SqliteStore extends Store {
 
   constructor(filename: string) {
     if (filename !== ":memory:") mkdirSync(dirname(filename), { recursive: true });
-    super(new SQL({ adapter: "sqlite", filename }));
+    super(oneAtATime(new SQL({ adapter: "sqlite", filename })));
   }
 
   async init() {
@@ -114,15 +131,15 @@ export class SqliteStore extends Store {
     await tx`delete from sections where doc_path = ${path}`;
   }
 
-  async wordSearch(terms: string[], scope: Scope, limit: number): Promise<number[]> {
+  async wordSearch(terms: string[], scope: Scope, limit: number): Promise<SectionRow[]> {
     if (!terms.length) return [];
     const where = this.scopeCondition("s.doc_path", scope, 1);
     const rows = await this.sql.unsafe(
-      `select s.id from sections_fts f join sections s on s.id = f.rowid
+      `select s.* from sections_fts f join sections s on s.id = f.rowid
        where sections_fts match ? and ${where.sql}
        order by bm25(sections_fts, ${WEIGHTS}) limit ${Number(limit)}`,
       [fts5Query(terms), ...where.params],
     );
-    return rows.map((r: any) => Number(r.id));
+    return rows.map(toSection);
   }
 }
