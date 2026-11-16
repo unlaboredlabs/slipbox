@@ -5,12 +5,12 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { z } from "zod";
 import { type Caller, hashKey } from "./access";
 import { UserError } from "./files";
-import type { Memory } from "./memory";
+import type { Entry, Memory } from "./memory";
 import { NAME } from "./name";
 import { VERSION } from "./version";
 
 export const INSTRUCTIONS = `This is your shared memory: Markdown notes kept by every agent you work with, with full history.
-- Call start first, with the path you are working in (for example projects/<name>), and follow the profiles it returns.
+- Call start first, with the path you are working in (for example projects/<name>), and follow the profiles it returns. shared/profile.md holds what every agent should know.
 - Search before you write, and update an existing note rather than adding a duplicate.
 - Keep each note's first paragraph a true one-line summary of it.
 - Keep profile.md files short and current: they are loaded every time.
@@ -23,33 +23,50 @@ interface ToolDef {
   name: string;
   description: string;
   input: Record<string, z.ZodType>;
+  /** Hints for clients deciding what to ask permission for. */
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean };
   /** What the activity log records for a call. */
   event: (a: Args) => { path?: string | null; query?: string | null };
   run: (caller: Caller, a: Args) => Promise<string>;
 }
 
-const json = (v: unknown) => JSON.stringify(v, null, 2);
+const json = (v: unknown) => JSON.stringify(v);
+
+/** At most this many entries of a folder are shown, so a big flat folder cannot flood an agent's context. */
+export const MAP_ENTRIES = 200;
+
+function capped(entries: Entry[]): { entries: Entry[]; more?: string } {
+  if (entries.length <= MAP_ENTRIES) return { entries };
+  const more = `${entries.length - MAP_ENTRIES} more entries are not shown: list a subfolder, or search.`;
+  return { entries: entries.slice(0, MAP_ENTRIES), more };
+}
 
 const tools = (memory: Memory): ToolDef[] => [
   {
     name: "start",
     description:
-      "What to load first: every profile.md from the root down to `path`, then the map of `path` (its folders and files with one-line summaries). Call this at the start of a task.",
+      "What to load first: shared/profile.md and every profile.md from the root down to `path`, then the map of `path` (its folders and files with one-line summaries, up to 200). Call this at the start of a task.",
     input: { path: z.string().optional().describe('A folder such as "projects/shop"; the root if omitted.') },
+    annotations: { readOnlyHint: true },
     event: (a) => ({ path: a.path ?? "" }),
     async run(caller, a) {
       const { profiles, map } = await memory.start(caller, a.path);
       const parts = profiles.map((p) => `## ${p.path}\n\n${p.content.trim()}\n`);
       if (!parts.length) parts.push("No profile.md on this path yet.\n");
-      return `# Profiles\n\n${parts.join("\n")}\n# Map of /${map.path}\n\n${json(map.entries)}`;
+      const { entries, more } = capped(map.entries);
+      return `# Profiles\n\n${parts.join("\n")}\n# Map of /${map.path}\n\n${json(entries)}${more ? `\n\n${more}` : ""}`;
     },
   },
   {
     name: "list",
-    description: "Folders and files under a path, each with its one-line summary, size and last change.",
+    description: "Folders and files under a path, each with its one-line summary, size and last change (up to 200).",
     input: { path: z.string().optional().describe('A folder such as "shared"; the root if omitted.') },
+    annotations: { readOnlyHint: true },
     event: (a) => ({ path: a.path ?? "" }),
-    run: async (caller, a) => json(await memory.list(caller, a.path)),
+    async run(caller, a) {
+      const { path, entries } = await memory.list(caller, a.path);
+      return json({ path, ...capped(entries) });
+    },
   },
   {
     name: "search",
@@ -60,6 +77,7 @@ const tools = (memory: Memory): ToolDef[] => [
       path: z.string().optional().describe("Only search under this folder."),
       limit: z.number().int().min(1).max(50).optional().describe("Number of results, 10 by default."),
     },
+    annotations: { readOnlyHint: true },
     event: (a) => ({ path: a.path ?? null, query: a.query }),
     run: async (caller, a) => json(await memory.search(caller, a.query, a.path, a.limit)),
   },
@@ -72,6 +90,7 @@ const tools = (memory: Memory): ToolDef[] => [
       lines: z.string().optional().describe('A line range such as "10-40", "10-" or "10".'),
       version: z.string().optional().describe("A version or commit from history, to read an old version."),
     },
+    annotations: { readOnlyHint: true },
     event: (a) => ({ path: a.path }),
     async run(caller, a) {
       const r = await memory.read(caller, a.path, { lines: a.lines, version: a.version });
@@ -97,7 +116,7 @@ const tools = (memory: Memory): ToolDef[] => [
     description:
       "Replace an exact piece of text in a note (old must appear exactly once), or append new text when old is empty.",
     input: {
-      path: z.string(),
+      path: z.string().describe('The note to change, such as "projects/shop/payments.md".'),
       old: z.string().describe("The exact text to replace, copied from read. Empty to append."),
       new: z.string().describe("The replacement text."),
       why: z.string().describe("One line: why this change."),
@@ -108,14 +127,22 @@ const tools = (memory: Memory): ToolDef[] => [
   {
     name: "delete",
     description: "Remove a note. It stays in history.",
-    input: { path: z.string(), why: z.string().describe("One line: why this note goes.") },
+    input: {
+      path: z.string().describe('The note to remove, such as "projects/shop/old-plan.md".'),
+      why: z.string().describe("One line: why this note goes."),
+    },
+    annotations: { destructiveHint: true, idempotentHint: true },
     event: (a) => ({ path: a.path }),
     run: async (caller, a) => json(await memory.delete(caller, a.path, a.why)),
   },
   {
     name: "history",
     description: "A note's versions, newest first: when, which agent, and why. read accepts a version from here.",
-    input: { path: z.string(), limit: z.number().int().min(1).max(1000).optional() },
+    input: {
+      path: z.string().describe('A file such as "shared/conventions.md".'),
+      limit: z.number().int().min(1).max(1000).optional().describe("Number of versions, 20 by default."),
+    },
+    annotations: { readOnlyHint: true },
     event: (a) => ({ path: a.path }),
     run: async (caller, a) => json(await memory.history(caller, a.path, a.limit)),
   },
@@ -124,7 +151,7 @@ const tools = (memory: Memory): ToolDef[] => [
 function buildServer(memory: Memory, caller: Caller): McpServer {
   const server = new McpServer({ name: NAME, version: VERSION }, { instructions: INSTRUCTIONS });
   for (const t of tools(memory)) {
-    server.registerTool(t.name, { description: t.description, inputSchema: t.input }, async (args: Args) => {
+    server.registerTool(t.name, { description: t.description, inputSchema: t.input, annotations: t.annotations }, async (args: Args) => {
       const where = safeEvent(t, args);
       try {
         const text = await t.run(caller, args);
@@ -155,8 +182,9 @@ function errorText(err: unknown): string {
     }
     return err.message;
   }
-  console.error(err);
-  return `Internal error: ${err instanceof Error ? err.message : String(err)}`;
+  // The details (paths on the server, a stack) go to the server's log, not to the agent.
+  console.error(err instanceof Error ? (err.stack ?? err.message) : err);
+  return "Internal error; the server log has the details.";
 }
 
 function unauthorized(message: string) {

@@ -159,6 +159,7 @@ async function status(config: Config) {
       `(${e.model}, ${e.embedded} / ${e.total} sections embedded, ${e.queued} queued)`,
   );
   if (e.lastError) console.log(`last error: ${e.lastError}`);
+  if (e.warning) console.log(`warning:  ${e.warning}`);
 }
 
 async function main(argv: string[]) {
