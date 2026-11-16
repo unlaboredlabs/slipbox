@@ -129,10 +129,11 @@ async function key(argv: string[]) {
         console.log(`${a.name.padEnd(20)} ${state.padEnd(34)} ${formatGrants(a.grants)}`);
       }
     } else {
-      const agent = (await store.listAgents()).find((a) => a.name === name && !a.revoked);
+      // Names are compared ignoring case, as everywhere else.
+      const agent = (await store.listAgents()).find((a) => a.name.toLowerCase() === name.toLowerCase() && !a.revoked);
       if (!agent) throw new UserError("not_found", `No active key named "${name}".`);
       await store.updateAgent(agent.id, { revoked: true });
-      console.log(`Revoked ${name}.`);
+      console.log(`Revoked ${agent.name}.`);
     }
   } finally {
     await store.close();

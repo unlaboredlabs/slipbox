@@ -65,6 +65,28 @@ describe(`files and history (${backend})`, () => {
     await expect(m.memory.write(writer, "shared/blank.md", "# Blank\n\nbye\n", "replace", "abc")).rejects.toMatchObject({ code: "bad_version" });
   });
 
+  test("a SHA-256 repository works too: 64-character commit ids", async () => {
+    await m.close();
+    await env.cleanup();
+    env = await makeEnv();
+    // A data folder whose git uses SHA-256, as `init.defaultObjectFormat=sha256` in the user's git config gives.
+    mkdirSync(env.dataDir, { recursive: true });
+    expect(Bun.spawnSync(["git", "init", "-q", "-b", "main", "--object-format=sha256"], { cwd: env.dataDir }).exitCode).toBe(0);
+    m = await openMemory(env);
+    const first = await m.memory.write(writer, "shared/s.md", "# S\n\none\n", "create");
+    expect(first.commit).toMatch(/^[0-9a-f]{64}$/);
+    await m.memory.edit(writer, "shared/s.md", "one", "two", "change");
+    // Disk and history agree, and old versions read back by their 64-character id.
+    expect((await m.memory.read(writer, "shared/s.md")).content).toBe("# S\n\ntwo\n");
+    const { versions } = await m.memory.history(writer, "shared/s.md");
+    expect(versions.map((v) => v.why)).toEqual(["change", "create"]);
+    expect(versions[1].version).toMatch(/^[0-9a-f]{64}$/);
+    expect((await m.memory.read(writer, "shared/s.md", { version: versions[1].version! })).content).toBe("# S\n\none\n");
+    expect((await m.memory.diff(writer, "shared/s.md", versions[1].commit, versions[0].commit)).diff).toContain("+two");
+    // The first version's diff, against nothing, as the dashboard shows it.
+    expect((await m.memory.diff(writer, "shared/s.md", undefined, versions[1].commit)).diff).toContain("+one");
+  });
+
   test("appending to a note that does not exist is refused: it would have no title", async () => {
     const err = await m.memory.edit(writer, "shared/new-log.md", "", "- first entry\n", "log").catch((e) => e);
     expect(err).toMatchObject({ code: "not_found" });
