@@ -1,6 +1,6 @@
 // Agent keys and path-prefix grants.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import type { Grant, Scope } from "./db";
+import type { Agent, Grant, Scope, Store } from "./db";
 import { UserError, dirPath } from "./files";
 
 /** Who is calling: an agent with grants, or the admin (the dashboard), who may do anything. */
@@ -70,4 +70,15 @@ export function requireRead(caller: Caller, path: string) {
 
 export function requireWrite(caller: Caller, path: string) {
   if (!canWrite(caller, path)) throw new UserError("forbidden", `This key may not write ${path}.`, 403);
+}
+
+/** Creates an agent and its key. The key is returned once and only its hash is stored. */
+export async function createAgent(store: Store, name: unknown, grants: unknown): Promise<{ agent: Agent; key: string }> {
+  const clean = checkAgentName(name);
+  const checked = checkGrants(grants ?? []);
+  if ((await store.listAgents()).some((a) => a.name === clean && !a.revoked)) {
+    throw new UserError("exists", `An agent named "${clean}" already exists.`, 409);
+  }
+  const key = newKey();
+  return { agent: await store.createAgent(clean, hashKey(key), checked), key };
 }
