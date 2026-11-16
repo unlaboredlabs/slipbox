@@ -1,6 +1,6 @@
 // A mock of the dashboard API in DESIGN.md, for developing the dashboard without the server.
 //
-//   bun run mock                    serves /api on PORT (default 3000), admin token "dev"
+//   bun run mock                    serves /api on PORT (default 7323, like the server), admin token "dev"
 //   ADMIN_TOKEN=x MEANING=off ...   another token; search answering by words only
 //
 // Simulated agents keep reading, searching and editing, so Activity has a live stream.
@@ -9,14 +9,15 @@
 import { join } from "node:path";
 import { seedAgents, seedFiles } from "./data";
 
-const PORT = Number(process.env.PORT ?? 3000);
+const PORT = Number(process.env.PORT ?? 7323);
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN ?? "dev";
 const MEANING = process.env.MEANING !== "off";
 const DIST = join(import.meta.dir, "..", "dist");
 
 // ---------- state ----------
 
-type Version = { version: string; commit: string; at: string; agent: string; why: string; content: string };
+// A version of null marks the commit that deleted the file; its content is "".
+type Version = { version: string | null; commit: string; at: string; agent: string; why: string; content: string };
 type Grant = { prefix: string; mode: "read" | "write" };
 type Agent = { id: string; name: string; createdAt: string; lastSeenAt: string | null; revoked: boolean; grants: Grant[] };
 type Event = { id: number; at: string; agent: string; action: string; path: string | null; query: string | null; ok: boolean };
@@ -29,7 +30,7 @@ const files = new Map<string, Version[]>(); // newest last
 for (const seed of seedFiles) {
   files.set(
     seed.path,
-    seed.versions.map((v) => ({ version: hash(v.content), commit: hex(20), at: ago(v.hoursAgo * 3600_000), agent: v.agent, why: v.why, content: v.content })),
+    seed.versions.map((v) => ({ version: v.deleted ? null : hash(v.content), commit: hex(20), at: ago(v.hoursAgo * 3600_000), agent: v.agent, why: v.why, content: v.content })),
   );
 }
 
@@ -56,7 +57,12 @@ function logEvent(e: Omit<Event, "id" | "at"> & { at?: string }) {
 
 // ---------- helpers ----------
 
-const current = (path: string) => files.get(path)?.at(-1);
+/** The latest version, unless the file is deleted. */
+const current = (path: string) => {
+  const latest = files.get(path)?.at(-1);
+  return latest?.version === null ? undefined : latest;
+};
+const livePaths = () => [...files.keys()].filter((path) => current(path));
 const bytes = (text: string) => new TextEncoder().encode(text).length;
 
 function titleAndSummary(content: string) {
@@ -70,13 +76,14 @@ function titleAndSummary(content: string) {
   return { title, summary: summary.startsWith("#") ? "" : summary };
 }
 
-function fileJson(path: string, v: Version) {
-  return { path, ...titleAndSummary(v.content), content: v.content, version: v.version, bytes: bytes(v.content), updatedAt: v.at };
+function fileJson(path: string, v: Version, old: boolean) {
+  return { path, ...titleAndSummary(v.content), content: v.content, version: v.version, bytes: bytes(v.content), updatedAt: old ? null : v.at };
 }
 
 function tree(prefix: string) {
   const entries = new Map<string, { name: string; path: string; type: "dir" | "file"; summary: string; bytes: number; updatedAt: string }>();
-  for (const [path, versions] of files) {
+  for (const path of livePaths()) {
+    const versions = files.get(path)!;
     if (!path.startsWith(prefix)) continue;
     const rest = path.slice(prefix.length);
     const [name, ...below] = rest.split("/");
@@ -97,7 +104,7 @@ function tree(prefix: string) {
 /** A unified diff between two texts, three lines of context. */
 function unifiedDiff(path: string, a: string, b: string) {
   const x = a === "" ? [] : a.replace(/\n$/, "").split("\n");
-  const y = b.replace(/\n$/, "").split("\n");
+  const y = b === "" ? [] : b.replace(/\n$/, "").split("\n");
   const lcs = Array.from({ length: x.length + 1 }, () => new Array<number>(y.length + 1).fill(0));
   for (let i = x.length - 1; i >= 0; i--)
     for (let j = y.length - 1; j >= 0; j--) lcs[i]![j] = x[i] === y[j] ? lcs[i + 1]![j + 1]! + 1 : Math.max(lcs[i + 1]![j]!, lcs[i]![j + 1]!);
@@ -112,7 +119,7 @@ function unifiedDiff(path: string, a: string, b: string) {
     else ops.push({ kind: "-", text: x[i]!, ai: i++, bi: j });
   }
 
-  const out = [`diff --git a/${path} b/${path}`, `--- ${a === "" ? "/dev/null" : `a/${path}`}`, `+++ b/${path}`];
+  const out = [`diff --git a/${path} b/${path}`, `--- ${a === "" ? "/dev/null" : `a/${path}`}`, `+++ ${b === "" ? "/dev/null" : `b/${path}`}`];
   const changed = ops.map((op, k) => (op.kind !== " " ? k : -1)).filter((k) => k >= 0);
   let k = 0;
   while (k < changed.length) {
@@ -123,7 +130,7 @@ function unifiedDiff(path: string, a: string, b: string) {
     const hunk = ops.slice(start, end);
     const aLen = hunk.filter((o) => o.kind !== "+").length;
     const bLen = hunk.filter((o) => o.kind !== "-").length;
-    out.push(`@@ -${aLen ? hunk[0]!.ai + 1 : 0},${aLen} +${hunk[0]!.bi + 1},${bLen} @@`);
+    out.push(`@@ -${aLen ? hunk[0]!.ai + 1 : 0},${aLen} +${bLen ? hunk[0]!.bi + 1 : 0},${bLen} @@`);
     for (const op of hunk) out.push(op.kind + op.text);
   }
   return out.join("\n") + "\n";
@@ -135,7 +142,7 @@ type Section = { path: string; heading: string; startLine: number; endLine: numb
 
 function sections(): Section[] {
   const all: Section[] = [];
-  for (const [path] of files) {
+  for (const path of livePaths()) {
     const lines = current(path)!.content.split("\n");
     let heading = "";
     let start = 0;
@@ -228,7 +235,7 @@ const queries = ["checkout webhook", "how do we deploy", "backup restore time", 
 function simulate() {
   const active = agents.filter((a) => !a.revoked);
   const agent = active[Math.floor(Math.random() * active.length)]!;
-  const readable = [...files.keys()].filter((p) => agent.grants.some((g) => p.startsWith(g.prefix)));
+  const readable = livePaths().filter((p) => agent.grants.some((g) => p.startsWith(g.prefix)));
   const path = readable[Math.floor(Math.random() * readable.length)] ?? null;
   const roll = Math.random();
   if (roll < 0.35) logEvent({ agent: agent.name, action: "search", path: null, query: queries[Math.floor(Math.random() * queries.length)]!, ok: true });
@@ -264,6 +271,14 @@ const json = (data: unknown, status = 200) => Response.json(data, { status });
 const readBody = async (req: Request) => (await req.json().catch(() => ({}))) as Record<string, any>;
 const fail = (status: number, code: string, message: string) => json({ error: { code, message } }, status);
 
+/** Like the server: "" for everything, otherwise a folder ending in "/". */
+function normalizeGrants(grants: Grant[]): Grant[] {
+  return grants.map((g) => {
+    const folder = g.prefix.trim().replace(/^\/+|\/+$/g, "");
+    return { prefix: folder ? `${folder}/` : "", mode: g.mode };
+  });
+}
+
 function validGrants(grants: unknown): grants is Grant[] {
   return Array.isArray(grants) && grants.every((g) => g && typeof g.prefix === "string" && (g.mode === "read" || g.mode === "write"));
 }
@@ -275,7 +290,7 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
 
   if (route === "GET /api/health") {
     const total = totalSections();
-    return json({ ok: true, db: "sqlite", embed: { model: "Xenova/bge-small-en-v1.5", loaded: MEANING, embedded: MEANING ? embedded : 0, total, queued: MEANING ? total - embedded : total, lastError: MEANING ? null : "Embedding model disabled (EMBED_MODEL=off)" } });
+    return json({ ok: true, db: "sqlite", version: "dev", embed: { model: "Xenova/bge-small-en-v1.5", loaded: MEANING, embedded: MEANING ? embedded : 0, total, queued: MEANING ? total - embedded : total, lastError: MEANING ? null : "Embedding model disabled (EMBED_MODEL=off)" } });
   }
   if (route === "GET /api/tree") {
     const path = p.get("path") ?? "";
@@ -286,9 +301,9 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     const versions = files.get(path);
     if (!versions) return fail(404, "not_found", `No file at ${path}`);
     const want = p.get("version");
-    const v = want ? versions.find((x) => x.version === want || x.commit === want) : versions.at(-1);
-    if (!v) return fail(404, "not_found", `No version ${want} of ${path}`);
-    return json(fileJson(path, v));
+    const v = want ? versions.find((x) => x.version === want || x.commit === want) : current(path);
+    if (!v || v.version === null) return fail(404, "not_found", want ? `No version ${want} of ${path}` : `No file at ${path}`);
+    return json(fileJson(path, v, v !== current(path)));
   }
   if (route === "GET /api/history") {
     const versions = files.get(p.get("path") ?? "");
@@ -308,7 +323,7 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     const body = await readBody(req);
     const versions = files.get(body.path);
     const old = versions?.find((v) => v.commit === body.commit);
-    if (!versions || !old) return fail(404, "not_found", "Unknown file or commit");
+    if (!versions || !old || old.version === null) return fail(404, "not_found", "Unknown file or commit");
     await Bun.sleep(400);
     const restored: Version = { ...old, commit: hex(20), at: new Date().toISOString(), agent: "admin", why: `Restore version from ${old.at.slice(0, 10)}` };
     versions.push(restored);
@@ -335,9 +350,9 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     const stream = new ReadableStream({
       start(controller) {
         const send = (chunk: string) => controller.enqueue(new TextEncoder().encode(chunk));
-        listener = (e) => send(`data: ${JSON.stringify(e)}\n\n`);
+        listener = (e) => send(`id: ${e.id}\ndata: ${JSON.stringify(e)}\n\n`);
         listeners.add(listener);
-        keepAlive = setInterval(() => send(": keep-alive\n\n"), 8000);
+        keepAlive = setInterval(() => send(": ping\n\n"), 8000);
         send(": connected\n\n");
       },
       cancel() {
@@ -352,9 +367,9 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     const body = await readBody(req);
     const name = String(body.name ?? "").trim();
     if (!/^[a-z0-9][a-z0-9._-]*$/.test(name)) return fail(400, "bad_request", "Name must be lowercase letters, digits, dots, dashes or underscores");
-    if (agents.some((a) => a.name === name)) return fail(409, "conflict", `An agent named ${name} already exists`);
+    if (agents.some((a) => a.name === name && !a.revoked)) return fail(409, "exists", `An agent named ${name} already exists`);
     if (!validGrants(body.grants)) return fail(400, "bad_request", "Invalid grants");
-    const agent: Agent = { id: hex(6), name, createdAt: new Date().toISOString(), lastSeenAt: null, revoked: false, grants: body.grants };
+    const agent: Agent = { id: hex(6), name, createdAt: new Date().toISOString(), lastSeenAt: null, revoked: false, grants: normalizeGrants(body.grants) };
     agents.push(agent);
     return json({ agent, key: `ctx_${hex(24)}` });
   }
@@ -365,7 +380,7 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     const body = await readBody(req);
     if (body.grants !== undefined) {
       if (!validGrants(body.grants)) return fail(400, "bad_request", "Invalid grants");
-      agent.grants = body.grants;
+      agent.grants = normalizeGrants(body.grants);
     }
     if (typeof body.revoked === "boolean") agent.revoked = body.revoked;
     return json({ agent });

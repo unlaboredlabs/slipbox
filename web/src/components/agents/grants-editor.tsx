@@ -7,15 +7,25 @@ import { Input } from "@/components/ui/input";
 export type GrantDraft = Grant & { key: number };
 
 let nextKey = 0;
-export const draftGrants = (grants: Grant[]): GrantDraft[] => grants.map((g) => ({ ...g, key: nextKey++ }));
+// In the editor, "/" stands for everything (the server's "").
+export const draftGrants = (grants: Grant[]): GrantDraft[] =>
+  grants.map((g) => ({ ...g, prefix: g.prefix || "/", key: nextKey++ }));
+
+/** As the server stores it: "" for everything, otherwise a folder ending in "/". */
+export function normalizePrefix(prefix: string) {
+  const folder = prefix.trim().replace(/^\/+|\/+$/g, "");
+  return folder ? `${folder}/` : "";
+}
+
 export const newGrant = (): GrantDraft => ({ prefix: "", mode: "read", key: nextKey++ });
 
-/** The grants to send: trimmed, empty rows dropped, one entry per prefix (write wins). */
+/** The grants to send: blank rows dropped, one entry per prefix (write wins). */
 export function cleanGrants(drafts: GrantDraft[]): Grant[] {
   const byPrefix = new Map<string, Grant["mode"]>();
   for (const { prefix, mode } of drafts) {
-    const p = prefix.trim();
-    if (p) byPrefix.set(p, byPrefix.get(p) === "write" ? "write" : mode);
+    if (!prefix.trim()) continue;
+    const p = normalizePrefix(prefix);
+    byPrefix.set(p, byPrefix.get(p) === "write" ? "write" : mode);
   }
   return [...byPrefix].map(([prefix, mode]) => ({ prefix, mode }));
 }
@@ -32,6 +42,7 @@ export function GrantsEditor({ value, onChange }: { value: GrantDraft[]; onChang
             onChange={(e) => update(grant.key, { prefix: e.target.value })}
             placeholder="projects/shop/"
             aria-label="Path prefix"
+            title="A folder, or / for everything"
             autoFocus={i === value.length - 1 && grant.prefix === "" && value.length > 1}
             className="font-mono text-[12.5px]"
             spellCheck={false}

@@ -1,7 +1,7 @@
 import { Link, Outlet, createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ActivityIcon, FileTextIcon, KeyRoundIcon, LogOutIcon, SearchIcon, type LucideIcon } from "lucide-react";
-import { token } from "@/lib/api";
+import { api, token } from "@/lib/api";
 import { APP_NAME } from "@/lib/config";
 
 export const Route = createFileRoute("/_app")({
@@ -46,14 +46,24 @@ function AppShell() {
             {label}
           </Link>
         ))}
-        <button type="button" onClick={signOut} className={`${rowClass} mt-auto`}>
-          <LogOutIcon strokeWidth={1.75} />
-          Sign out
-        </button>
+        <div className="mt-auto flex items-center">
+          <button type="button" onClick={signOut} className={`${rowClass} flex-1`}>
+            <LogOutIcon strokeWidth={1.75} />
+            Sign out
+          </button>
+          <Version />
+        </div>
       </nav>
       <main className="flex min-w-0 flex-1 flex-col">
         <Outlet />
       </main>
     </div>
   );
+}
+
+function Version() {
+  const health = useQuery({ queryKey: ["health"], queryFn: () => api.health(), staleTime: 60_000 });
+  const version = health.data?.version;
+  if (!version) return null;
+  return <span className="px-2.5 text-[11px] text-muted-foreground/70 tabular-nums">{/^\d/.test(version) ? `v${version}` : version}</span>;
 }

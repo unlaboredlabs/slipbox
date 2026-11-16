@@ -1,6 +1,6 @@
 // Sample memory for the mock server: a few folders of notes, each with a short history.
 
-type Seed = { path: string; versions: { agent: string; why: string; hoursAgo: number; content: string }[] };
+type Seed = { path: string; versions: { agent: string; why: string; hoursAgo: number; content: string; deleted?: boolean }[] };
 
 export const seedAgents = [
   { name: "claude-code", grants: [{ prefix: "shared/", mode: "write" }, { prefix: "projects/", mode: "write" }, { prefix: "agents/claude-code/", mode: "write" }], daysOld: 41, seenMinutesAgo: 2 },
@@ -79,6 +79,14 @@ export const seedFiles: Seed[] = [
     path: "shared/people.md",
     versions: [
       { agent: "research", why: "List who to ask about what", hoursAgo: 300, content: `# People\n\nWho to ask about what.\n\n| Topic | Ask |\n|---|---|\n| Design, copy | Sam |\n| Database, deploys | Ines |\n| Payments provider | Ines |\n\nBoth prefer a short written question over a call.\n` },
+    ],
+  },
+  {
+    path: "shared/glossary.md",
+    versions: [
+      { agent: "research", why: "Start a glossary", hoursAgo: 340, content: `# Glossary\n\nWords we use in a specific way.\n\n- **Note**: one Markdown file in the memory.\n- **Profile**: a folder's \`profile.md\`, loaded first.\n` },
+      { agent: "claude-code", why: "Remove the glossary; terms moved into conventions", hoursAgo: 150, content: "", deleted: true },
+      { agent: "research", why: "Bring the glossary back with section terms", hoursAgo: 30, content: `# Glossary\n\nWords we use in a specific way.\n\n- **Note**: one Markdown file in the memory.\n- **Profile**: a folder's \`profile.md\`, loaded first.\n- **Section**: the part of a note under one heading; search returns sections.\n` },
     ],
   },
   {

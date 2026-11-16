@@ -3,10 +3,10 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import { fileURLToPath } from "node:url";
-import { APP_NAME } from "./src/lib/config";
+import { APP_NAME } from "./src/lib/config.ts";
 
-// In dev, /api goes to the server (or the mock) on PORT, default 3000.
-const apiPort = process.env.PORT ?? "3000";
+// In dev, /api goes to the server (or the mock) on PORT, default 7323 like the server.
+const apiPort = process.env.PORT ?? "7323";
 
 export default defineConfig({
   // Relative asset paths, so the built files work wherever the server mounts them.

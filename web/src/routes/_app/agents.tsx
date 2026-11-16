@@ -140,7 +140,7 @@ function Grants({ grants }: { grants: Agent["grants"] }) {
     <span className="flex flex-wrap gap-1.5">
       {grants.map((g) => (
         <span key={g.prefix} className="inline-flex h-6 items-center gap-1.5 rounded-md bg-muted px-2 text-xs">
-          <span className="font-mono text-[11.5px]">{g.prefix}</span>
+          {g.prefix ? <span className="font-mono text-[11.5px]">{g.prefix}</span> : <span>everything</span>}
           <span className={cn(g.mode === "write" ? "text-foreground/70" : "text-muted-foreground")}>{g.mode}</span>
         </span>
       ))}

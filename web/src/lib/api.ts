@@ -3,6 +3,8 @@
 export type Health = {
   ok: boolean;
   db: string;
+  /** The server's version: a release number, or "dev". */
+  version: string;
   embed: {
     model: string;
     loaded: boolean;
@@ -19,7 +21,8 @@ export type TreeEntry = {
   type: "dir" | "file";
   summary: string;
   bytes: number;
-  updatedAt: string;
+  /** Null for an empty folder. */
+  updatedAt: string | null;
 };
 
 export type FileDoc = {
@@ -29,10 +32,12 @@ export type FileDoc = {
   content: string;
   version: string;
   bytes: number;
-  updatedAt: string;
+  /** Null when reading an old version. */
+  updatedAt: string | null;
 };
 
-export type Version = { version: string; commit: string; at: string; agent: string; why: string };
+/** `version` is null for the commit that deleted the file. */
+export type Version = { version: string | null; commit: string; at: string; agent: string; why: string };
 
 export type SearchResult = {
   path: string;
@@ -57,6 +62,7 @@ export type ActivityEvent = {
   ok: boolean;
 };
 
+/** `prefix` is "" for everything, otherwise a folder ending in "/". */
 export type Grant = { prefix: string; mode: "read" | "write" };
 
 export type Agent = {

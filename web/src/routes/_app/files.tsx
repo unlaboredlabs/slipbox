@@ -93,10 +93,14 @@ function FileView({
           {file.data && (
             <span className="text-xs text-muted-foreground tabular-nums">
               {formatBytes(file.data.bytes)}
-              <span className="mx-1.5 text-muted-foreground/40">·</span>
-              <Hint label={formatDate(file.data.updatedAt)}>
-                <span>{timeAgo(file.data.updatedAt)}</span>
-              </Hint>
+              {file.data.updatedAt && (
+                <>
+                  <span className="mx-1.5 text-muted-foreground/40">·</span>
+                  <Hint label={formatDate(file.data.updatedAt)}>
+                    <span>{timeAgo(file.data.updatedAt)}</span>
+                  </Hint>
+                </>
+              )}
             </span>
           )}
           <Button variant="ghost" size="sm" onClick={onToggleHistory} className={cn(historyOpen && "bg-accent text-foreground")} aria-pressed={historyOpen}>
@@ -196,7 +200,11 @@ function VersionRow({ version, path, current, selected }: { version: Version; pa
         <Hint label={formatDate(version.at)}>
           <span className="shrink-0">{timeAgo(version.at)}</span>
         </Hint>
-        {current && <span className="ml-auto shrink-0 text-[11px] text-muted-foreground/80">Current</span>}
+        {version.version === null ? (
+          <span className="ml-auto shrink-0 text-[11px] text-removed-strong">Deleted</span>
+        ) : (
+          current && <span className="ml-auto shrink-0 text-[11px] text-muted-foreground/80">Current</span>
+        )}
       </span>
     </button>
   );
@@ -232,7 +240,7 @@ function VersionDiff({ path, commit }: { path: string; commit: string }) {
             <span className="font-mono text-xs">{commit.slice(0, 7)}</span>
           </p>
         </div>
-        {index > 0 && <RestoreButton path={path} version={version} />}
+        {index > 0 && version.version !== null && <RestoreButton path={path} version={version} />}
       </div>
       {diff.isPending ? (
         <Skeleton className="h-48 w-full rounded-lg" />
