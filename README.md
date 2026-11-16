@@ -76,6 +76,21 @@ For other MCP clients that speak Streamable HTTP:
 
 Agents get eight tools: `start`, `list`, `search`, `read`, `write`, `edit`, `delete` and `history`, and instructions to call `start` first, search before writing, and correct facts in place rather than add duplicates.
 
+### The agent skill
+
+The tools say how the memory works. The [slipbox skill](skills/slipbox/SKILL.md) says when to use it: load context at the start of work, search before deciding or asking, what is worth writing down and where, and how to leave a handover note. Install it with the [skills](https://skills.sh) CLI (Node.js 22.20 or later):
+
+```sh
+npx skills add unlaboredlabs/slipbox -g    # -g for every project; without it, the current one
+```
+
+Or copy it by hand into your agent's skills folder, for Claude Code `~/.claude/skills/slipbox/SKILL.md`:
+
+```sh
+mkdir -p ~/.claude/skills/slipbox
+curl -fsSL https://raw.githubusercontent.com/unlaboredlabs/slipbox/main/skills/slipbox/SKILL.md -o ~/.claude/skills/slipbox/SKILL.md
+```
+
 ## How notes are kept
 
 ```
