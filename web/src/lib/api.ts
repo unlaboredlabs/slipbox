@@ -99,11 +99,8 @@ export function setUnauthorizedHandler(handler: () => void) {
   onUnauthorized = handler;
 }
 
-// Where the dashboard is mounted: built files live in <base>/assets/, so the API is at <base>/api.
-const base = import.meta.env.DEV ? new URL("/", location.origin) : new URL(/* @vite-ignore */ "..", import.meta.url);
-
 export function apiUrl(path: string, params?: Record<string, string | number | undefined | null>) {
-  const url = new URL(`api/${path}`, base);
+  const url = new URL(`/api/${path}`, location.origin);
   for (const [key, value] of Object.entries(params ?? {})) {
     if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, String(value));
   }
@@ -147,12 +144,12 @@ export const api = {
   health: (withToken?: string) => request<Health>("GET", "health", { token: withToken }),
   tree: (path: string) => request<{ path: string; entries: TreeEntry[] }>("GET", "tree", { params: { path } }),
   file: (path: string, version?: string) => request<FileDoc>("GET", "file", { params: { path, version } }),
-  history: (path: string, limit = 100) =>
+  history: (path: string, limit: number) =>
     request<{ versions: Version[] }>("GET", "history", { params: { path, limit } }),
   diff: (path: string, from: string | undefined, to: string) =>
     request<{ diff: string }>("GET", "diff", { params: { path, from, to } }),
   restore: (path: string, commit: string) => request<{ version: string }>("POST", "restore", { body: { path, commit } }),
-  search: (q: string, path?: string, limit = 20) =>
+  search: (q: string, path?: string, limit?: number) =>
     request<SearchResponse>("GET", "search", { params: { q, path, limit } }),
   events: (params: { after?: number; limit?: number; agent?: string }) =>
     request<{ events: ActivityEvent[] }>("GET", "events", { params }),

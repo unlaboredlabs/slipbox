@@ -9,14 +9,18 @@ import { APP_NAME } from "./src/lib/config.ts";
 const apiPort = process.env.PORT ?? "7323";
 
 export default defineConfig({
-  // Relative asset paths, so the built files work wherever the server mounts them.
-  base: "./",
+  // The server mounts the dashboard at /. Absolute asset paths keep a deep URL
+  // (/projects/shop/profile.md, from a link in a note) loading the app, not a blank page.
+  base: "/",
   plugins: [
-    tanstackRouter({ target: "react", autoCodeSplitting: true }),
+    // One bundle: a page not yet visited still opens while the server is down.
+    tanstackRouter({ target: "react" }),
     react(),
     tailwindcss(),
     { name: "app-name", transformIndexHtml: (html) => html.replace("%APP_NAME%", APP_NAME) },
   ],
+  // The whole app is one bundle on purpose (see above), about 230 kB gzipped.
+  build: { chunkSizeWarningLimit: 1000 },
   resolve: {
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
   },
