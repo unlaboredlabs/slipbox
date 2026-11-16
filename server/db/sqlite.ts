@@ -35,9 +35,13 @@ create table if not exists embeddings (
 );
 `;
 
+// The busy timeout comes first: every statement after it, including the switch
+// to WAL, then waits for another process's write (the CLI beside a running
+// server) instead of failing with "database is locked".
 const SCHEMA = `
+pragma busy_timeout = 10000;
 pragma journal_mode = wal;
-pragma busy_timeout = 5000;
+pragma synchronous = normal;
 pragma foreign_keys = on;
 create table if not exists agents (
   id integer primary key autoincrement,
@@ -82,6 +86,12 @@ export class SqliteStore extends Store {
   async resetIndex() {
     await this.exec("drop table if exists sections_fts; drop table if exists sections; drop table if exists docs; drop table if exists embeddings");
     await this.exec(INDEX_SCHEMA);
+  }
+
+  // BEGIN IMMEDIATE takes the write lock up front. A deferred transaction that
+  // reads and then writes cannot wait for the lock in WAL mode: it fails at once.
+  protected transaction<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
+    return this.sql.begin("immediate", fn) as Promise<T>;
   }
 
   protected param(_i: number) {

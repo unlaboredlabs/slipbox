@@ -16,7 +16,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  BUN_VERSION: 1.4.3
   NAME: slipbox
 
 jobs:
@@ -31,28 +30,11 @@ jobs:
           - { runner: ubuntu-24.04-arm, target: linux-arm64 }
           - { runner: macos-15, target: darwin-arm64 }
           - { runner: macos-15-intel, target: darwin-x64 }
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-          fetch-depth: 0 # the version counts every commit
-          persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-      - run: bun install --frozen-lockfile
-      - name: Build
-        run: bun server/build.ts --release --outfile "dist/$NAME-${{ matrix.target }}"
-      - name: Smoke test
-        run: bun server/smoke.ts "dist/$NAME-${{ matrix.target }}"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: ${{ env.NAME }}-${{ matrix.target }}
-          path: dist/${{ env.NAME }}-${{ matrix.target }}
-          if-no-files-found: error
-          retention-days: 3
+    uses: ./.github/workflows/build.yml
+    with:
+      runner: ${{ matrix.runner }}
+      target: ${{ matrix.target }}
+      ref: ${{ github.event.workflow_run.head_sha }}
 
   publish:
     needs: build
