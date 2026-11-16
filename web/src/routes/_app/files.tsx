@@ -91,17 +91,19 @@ function OpenFile(props: OpenFileProps) {
 
 function FileView({ path, commit, lines, historyOpen, onToggleHistory, limit }: OpenFileProps & { limit: number }) {
   const file = useQuery({ queryKey: ["file", path], queryFn: () => api.file(path) });
-  const segments = path.split("/");
+  // Deep paths keep the first and last two folders: "projects / … / shop / profile.md".
+  const folders = path.split("/").slice(0, -1);
+  const segments = [...(folders.length > 3 ? [folders[0], "…", ...folders.slice(-2)] : folders), path.split("/").pop()!];
 
   return (
     <>
       <header className="flex h-14 shrink-0 items-center gap-3 px-6">
-        {/* Segments shrink in proportion to their length, so a long file name gives way before short folders do. */}
+        {/* Only the file name shrinks: folders are short, and a sliver taken from each would cut them all. */}
         <nav className="flex min-w-0 items-center gap-1.5 overflow-hidden text-[13px] text-muted-foreground">
           {segments.map((segment, i) => {
             const last = i === segments.length - 1;
             return (
-              <span key={i} className={cn("flex min-w-0 items-center gap-1.5", last && "min-w-[6ch]")}>
+              <span key={i} className={cn("flex items-center gap-1.5", last ? "min-w-[8ch]" : "max-w-36 shrink-0")}>
                 {i > 0 && <span className="text-muted-foreground/40">/</span>}
                 <span className={cn("truncate", last && "text-foreground")} title={last ? path : undefined}>
                   {segment}
