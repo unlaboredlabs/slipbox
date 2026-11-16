@@ -100,6 +100,14 @@ describe(`notes stay safe (${backend})`, () => {
   test("a new folder reconciles that folder, not every file", async () => {
     await m.close();
     m = await openMemory(env, undefined, { watch: true });
+    // macOS's file events can miss a change made the moment the watcher starts: wait until it sees one.
+    const committed = async (path: string) =>
+      (await m.memory.history(writer, path).catch(() => ({ versions: [] }))).versions.length > 0;
+    for (let i = 0; !(await committed("live.md")); i++) {
+      writeFileSync(join(env.dataDir, "live.md"), `# Live\n\nthe watcher is on (${i})\n`);
+      await until(() => committed("live.md"), 1000).catch(() => {});
+      if (i > 10) throw new Error("the watcher never saw a change");
+    }
     const files = m.memory.files;
     const realAll = files.allFiles.bind(files);
     const scanned: string[] = [];
@@ -109,7 +117,7 @@ describe(`notes stay safe (${backend})`, () => {
     };
     mkdirSync(join(env.dataDir, "projects/new"), { recursive: true });
     writeFileSync(join(env.dataDir, "projects/new/n.md"), "# New\n\nwatched folder\n");
-    await until(async () => (await m.memory.history(writer, "projects/new/n.md").catch(() => ({ versions: [] }))).versions.length === 1);
+    await until(() => committed("projects/new/n.md"), 10_000);
     expect(scanned).not.toContain("");
   });
 
