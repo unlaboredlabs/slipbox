@@ -56,6 +56,15 @@ describe(`files and history (${backend})`, () => {
     expect(err.details).toEqual({ version: second.version, content: "# A\n\ntwo\n" });
   });
 
+  test("a blank baseVersion counts as none: a new note is created, an existing one is not replaced", async () => {
+    const r = await m.memory.write(writer, "shared/blank.md", "# Blank\n\nhi\n", "create", "");
+    expect(r.version).toBe(versionOf("# Blank\n\nhi\n"));
+    await expect(m.memory.write(writer, "shared/blank.md", "# Blank\n\nbye\n", "replace", " ")).rejects.toMatchObject({ code: "exists" });
+    expect((await m.memory.read(writer, "shared/blank.md")).content).toBe("# Blank\n\nhi\n");
+    // A short one that is not blank is still refused, so a typo is not taken for "none".
+    await expect(m.memory.write(writer, "shared/blank.md", "# Blank\n\nbye\n", "replace", "abc")).rejects.toMatchObject({ code: "bad_version" });
+  });
+
   test("appending to a note that does not exist is refused: it would have no title", async () => {
     const err = await m.memory.edit(writer, "shared/new-log.md", "", "- first entry\n", "log").catch((e) => e);
     expect(err).toMatchObject({ code: "not_found" });

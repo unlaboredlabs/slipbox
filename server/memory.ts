@@ -206,6 +206,8 @@ export class Memory {
     requireWrite(caller, path);
     checkWhy(why);
     if (typeof content !== "string") throw new UserError("bad_content", "content must be text.");
+    // Clients with strict schemas send every optional field, an absent baseVersion as "".
+    if (typeof baseVersion === "string" && !baseVersion.trim()) baseVersion = undefined;
     if (baseVersion !== undefined && baseVersion.trim().length < 7) {
       throw new UserError("bad_version", `baseVersion "${baseVersion}" is too short; pass the version that read returned.`);
     }
