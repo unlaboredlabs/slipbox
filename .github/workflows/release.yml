@@ -1,0 +1,95 @@
+# A rolling release: every push to main that passes CI replaces the assets of
+# the one prerelease tagged `edge`. The version is the number of commits on main.
+name: Release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  BUN_VERSION: 1.4.3
+  NAME: slipbox
+
+jobs:
+  build:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Native runners, so each program is smoke-tested with its own embedding runtime.
+          - { runner: ubuntu-24.04, target: linux-x64 }
+          - { runner: ubuntu-24.04-arm, target: linux-arm64 }
+          - { runner: macos-15, target: darwin-arm64 }
+          - { runner: macos-15-intel, target: darwin-x64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0 # the version counts every commit
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - name: Build
+        run: bun server/build.ts --release --outfile "dist/$NAME-${{ matrix.target }}"
+      - name: Smoke test
+        run: bun server/smoke.ts "dist/$NAME-${{ matrix.target }}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.NAME }}-${{ matrix.target }}
+          path: dist/${{ env.NAME }}-${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: assets
+          pattern: ${{ env.NAME }}-*
+          merge-multiple: true
+      - name: Checksums and version
+        run: |
+          cd assets
+          sha256sum "$NAME"-* > checksums.txt
+          git rev-list --count HEAD > version
+          cat checksums.txt version
+      - name: Move the edge tag and replace the release assets
+        run: |
+          version="$(cat assets/version)"
+          short="$(git rev-parse --short=7 HEAD)"
+          date="$(git show -s --format=%cs HEAD)"
+          notes="Version $version, built from $short on $date. Install or update: curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | sh"
+          git tag -f edge "$SHA"
+          git push -f origin refs/tags/edge
+          if gh release view edge >/dev/null 2>&1; then
+            gh release edit edge --title "$NAME $version" --notes "$notes" --prerelease
+          else
+            gh release create edge --title "$NAME $version" --notes "$notes" --prerelease --verify-tag
+          fi
+          gh release upload edge assets/* --clobber
