@@ -4,7 +4,7 @@ import { SQL } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Store, openStore } from "../db";
+import { openStore } from "../db";
 import type { Embedder } from "../index/embed";
 import { Memory } from "../memory";
 import { NAME } from "../name";
