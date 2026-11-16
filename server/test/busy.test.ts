@@ -24,6 +24,7 @@ describe(`CLI against a busy server (${backend})`, () => {
       writeFileSync(join(dir, `n${i}.md`), `# Note ${i}\n\nSummary of note ${i}.\n\n${body.join("\n\n")}\n`);
     }
     // Share the test model cache, so the server really embeds (and is busy doing so).
+    mkdirSync(MODELS_DIR, { recursive: true });
     symlinkSync(MODELS_DIR, join(env.dir, "models"));
   });
 

@@ -154,7 +154,9 @@ describe(`server (${backend})`, () => {
   });
 
   test("every call logs an event, and the stream pushes them live", async () => {
-    const res = await fetch(`${app.url}/api/events/stream?token=${ADMIN_TOKEN}`);
+    // The token goes in the header only, never in the URL.
+    expect((await fetch(`${app.url}/api/events/stream?token=${ADMIN_TOKEN}`)).status).toBe(401);
+    const res = await fetch(`${app.url}/api/events/stream`, { headers: { Authorization: `Bearer ${ADMIN_TOKEN}` } });
     expect(res.headers.get("content-type")).toContain("text/event-stream");
     const reader2 = res.body!.getReader();
     let received = "";
@@ -217,6 +219,11 @@ describe(`server (${backend})`, () => {
       await api(`/api/agents/${agent.id}`, { method: "PATCH", body: JSON.stringify({ grants: [{ prefix: "shared/", mode: "read" }] }) })
     ).json();
     expect(patched.agent.grants).toEqual([{ prefix: "shared/", mode: "read" }]);
+    // Revoking is final.
+    expect((await api(`/api/agents/${agent.id}`, { method: "PATCH", body: JSON.stringify({ revoked: true }) })).status).toBe(200);
+    const unrevoke = await api(`/api/agents/${agent.id}`, { method: "PATCH", body: JSON.stringify({ revoked: false }) });
+    expect(unrevoke.status).toBe(400);
+    expect((await (await api(`/api/agents`)).json()).agents.find((a: any) => a.id === agent.id).revoked).toBe(true);
     const { agents } = await (await api("/api/agents")).json();
     const reader = agents.find((a: any) => a.name === "reader");
     expect(reader.lastSeenAt).toBeTruthy();

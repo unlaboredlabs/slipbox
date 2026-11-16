@@ -1,5 +1,5 @@
 import { SQL } from "bun";
-import { mkdirSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { dirname } from "node:path";
 import { Locks } from "../files";
 import type { Section } from "../index/sections";
@@ -91,13 +91,31 @@ const WEIGHTS = "4.0, 2.0, 1.0";
 export class SqliteStore extends Store {
   readonly kind = "sqlite" as const;
 
-  constructor(filename: string) {
-    if (filename !== ":memory:") mkdirSync(dirname(filename), { recursive: true });
+  constructor(private filename: string) {
+    if (filename !== ":memory:") {
+      mkdirSync(dirname(filename), { recursive: true });
+      // Keys, the index and the activity log are for this user only. SQLite
+      // gives the -wal and -shm files the database file's mode.
+      if (!existsSync(filename)) closeSync(openSync(filename, "a", 0o600));
+      for (const f of [filename, `${filename}-wal`, `${filename}-shm`]) {
+        try {
+          chmodSync(f, 0o600);
+        } catch {}
+      }
+    }
     super(oneAtATime(new SQL({ adapter: "sqlite", filename })));
   }
 
   async init() {
-    await this.exec(SCHEMA);
+    try {
+      await this.exec(SCHEMA);
+    } catch (err) {
+      if (!/malformed|not a database/i.test(String(err))) throw err;
+      throw new Error(
+        `${this.filename} is damaged (${err instanceof Error ? err.message : err}). Stop the server and move it aside: ` +
+          "the search index rebuilds from the files at the next start, but agent keys must be created again.",
+      );
+    }
   }
 
   async resetIndex() {

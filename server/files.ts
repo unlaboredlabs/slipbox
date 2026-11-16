@@ -1,8 +1,24 @@
 // The Markdown files on disk: path rules, size caps, per-path locks.
-import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
-import { dirname, join, sep } from "node:path";
+import { createHash, randomBytes } from "node:crypto";
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeSync,
+} from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { PROFILE_MAX_BYTES } from "./config";
+import { NAME } from "./name";
 
 export class UserError extends Error {
   constructor(
@@ -16,6 +32,8 @@ export class UserError extends Error {
 }
 
 const SEGMENT = /^[a-z0-9_-][a-z0-9._-]*$/;
+const MAX_SEGMENT = 100;
+const MAX_PATH = 512;
 
 /**
  * Normalises a folder path: "" for the root, otherwise "a/b/" with a
@@ -39,14 +57,22 @@ export function filePath(input: string | undefined): string {
 
 function checkSegments(p: string) {
   if (p.startsWith("/")) throw new UserError("bad_path", `"${p}" is absolute; paths are relative, like shared/notes.md.`);
-  for (const seg of p.split("/")) {
+  if (p.length > MAX_PATH) throw new UserError("bad_path", `The path is ${p.length} characters; the cap is ${MAX_PATH}.`);
+  const segs = p.split("/");
+  segs.forEach((seg, i) => {
     if (seg === "." || seg === ".." || !SEGMENT.test(seg)) {
       throw new UserError(
         "bad_path",
         `"${p}" is not a valid path: use lowercase segments of a-z, 0-9, ".", "_" and "-", separated by "/".`,
       );
     }
-  }
+    if (seg.length > MAX_SEGMENT) {
+      throw new UserError("bad_path", `"${seg.slice(0, 20)}..." is ${seg.length} characters; a name's cap is ${MAX_SEGMENT}.`);
+    }
+    if (i < segs.length - 1 && seg.endsWith(".md")) {
+      throw new UserError("bad_path", `"${p}": a folder name cannot end in .md.`);
+    }
+  });
 }
 
 export function isProfile(path: string): boolean {
@@ -77,6 +103,14 @@ export class Locks {
     });
     return result;
   }
+
+  /** Resolves once every queued and running call has finished, or after `ms`. */
+  async drain(ms: number) {
+    const end = Date.now() + ms;
+    while (this.tails.size && Date.now() < end) {
+      await Promise.race([Promise.all(this.tails.values()), Bun.sleep(Math.max(0, end - Date.now()))]);
+    }
+  }
 }
 
 export interface FileEntry {
@@ -85,13 +119,7 @@ export interface FileEntry {
   type: "dir" | "file";
 }
 
-function isDanglingLink(p: string): boolean {
-  try {
-    return lstatSync(p).isSymbolicLink();
-  } catch {
-    return false;
-  }
-}
+const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 export class Files {
   readonly root: string;
@@ -100,25 +128,30 @@ export class Files {
     dir: string,
     public maxFileBytes: number,
   ) {
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try {
+      chmodSync(dir, 0o700); // notes are for this user only
+    } catch {}
     this.root = realpathSync(dir);
   }
 
-  /** The absolute path for a checked relative path, refusing symlinks that lead outside the folder. */
+  /**
+   * The absolute path for a checked relative path. A symlink anywhere below the
+   * root is refused: it could lead outside the folder, or around a key's grants.
+   */
   abs(rel: string): string {
-    const full = join(this.root, rel);
-    // Resolve the nearest existing ancestor (or the path itself, following
-    // symlinks) and make sure it is still inside root.
-    let probe = full;
-    while (!existsSync(probe) && probe !== this.root) {
-      if (isDanglingLink(probe)) throw new UserError("bad_path", `"${rel}" is a broken link.`);
-      probe = dirname(probe);
+    let at = this.root;
+    for (const part of rel.split("/").filter(Boolean)) {
+      at = join(at, part);
+      let link: boolean;
+      try {
+        link = lstatSync(at).isSymbolicLink();
+      } catch {
+        break; // missing: nothing below it exists
+      }
+      if (link) throw new UserError("bad_path", `"${rel}" goes through a symlink, which ${NAME} does not follow.`);
     }
-    const real = realpathSync(probe);
-    if (real !== this.root && !real.startsWith(this.root + sep)) {
-      throw new UserError("bad_path", `"${rel}" leads outside the data folder.`);
-    }
-    return full;
+    return join(this.root, rel);
   }
 
   checkSize(path: string, content: string) {
@@ -132,17 +165,50 @@ export class Files {
     }
   }
 
+  /** The file's text, or null if it does not exist. Refuses a file that is not UTF-8 (code not_text). */
   async read(path: string): Promise<string | null> {
     const full = this.abs(path);
     if (!existsSync(full)) return null;
     if (!statSync(full).isFile()) return null;
-    return await Bun.file(full).text();
+    const bytes = readFileSync(full);
+    try {
+      return UTF8.decode(bytes);
+    } catch {
+      throw new UserError("not_text", `${path} is not UTF-8 text, so ${NAME} will not change it; fix or remove it outside.`, 422, {
+        version: versionOf(bytes),
+      });
+    }
   }
 
+  /** Replaces a file whole: written to a temporary file, flushed, then renamed over it. */
   async write(path: string, content: string) {
     const full = this.abs(path);
-    mkdirSync(dirname(full), { recursive: true });
-    await Bun.write(full, content);
+    const dir = dirname(full);
+    mkdirSync(dir, { recursive: true });
+    // A hidden name, so the watcher and the path rules ignore it.
+    const tmp = join(dir, `.${basename(full)}.tmp-${randomBytes(4).toString("hex")}`);
+    try {
+      const fd = openSync(tmp, "w");
+      try {
+        const bytes = Buffer.from(content, "utf8");
+        for (let off = 0; off < bytes.length; ) off += writeSync(fd, bytes, off);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      renameSync(tmp, full);
+    } catch (err) {
+      rmSync(tmp, { force: true });
+      throw err;
+    }
+    try {
+      const fd = openSync(dir, "r");
+      try {
+        fsyncSync(fd); // the rename itself
+      } finally {
+        closeSync(fd);
+      }
+    } catch {}
   }
 
   remove(path: string) {
@@ -156,6 +222,10 @@ export class Files {
     }
   }
 
+  exists(path: string): boolean {
+    return existsSync(this.abs(path));
+  }
+
   mtime(path: string): string {
     return statSync(this.abs(path)).mtime.toISOString();
   }
@@ -166,10 +236,10 @@ export class Files {
     if (!existsSync(full) || !statSync(full).isDirectory()) return [];
     const out: FileEntry[] = [];
     for (const d of readdirSync(full, { withFileTypes: true })) {
-      if (!SEGMENT.test(d.name)) continue;
-      const isDir = d.isDirectory() || (d.isSymbolicLink() && statSync(join(full, d.name)).isDirectory());
-      if (isDir) out.push({ name: d.name, path: dir + d.name + "/", type: "dir" });
-      else if (d.name.endsWith(".md")) out.push({ name: d.name, path: dir + d.name, type: "file" });
+      // Symlinks are skipped (see abs), and so are names no path may have.
+      if (!SEGMENT.test(d.name) || d.name.length > MAX_SEGMENT) continue;
+      if (d.isDirectory() && !d.name.endsWith(".md")) out.push({ name: d.name, path: dir + d.name + "/", type: "dir" });
+      else if (d.isFile() && d.name.endsWith(".md")) out.push({ name: d.name, path: dir + d.name, type: "file" });
     }
     return out.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === "dir" ? -1 : 1));
   }
@@ -178,14 +248,8 @@ export class Files {
   allFiles(dir = ""): string[] {
     const out: string[] = [];
     for (const e of this.children(dir)) {
-      if (e.type === "dir") {
-        try {
-          this.abs(e.path);
-          out.push(...this.allFiles(e.path));
-        } catch {
-          // a folder symlinked outside the data folder is ignored
-        }
-      } else out.push(e.path);
+      if (e.type === "dir") out.push(...this.allFiles(e.path));
+      else out.push(e.path);
     }
     return out;
   }

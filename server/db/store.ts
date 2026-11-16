@@ -240,6 +240,11 @@ export abstract class Store {
     return { id: Number(row.id), at, ...e };
   }
 
+  /** Keeps only the newest `keep` events. */
+  async pruneEvents(keep: number) {
+    await this.sql`delete from events where id <= (select coalesce(max(id), 0) from events) - ${keep}`;
+  }
+
   /** Newest first; `after` returns only events with a larger id. */
   async events(opts: { after?: number; limit?: number; agent?: string }): Promise<Event[]> {
     const after = opts.after ?? 0;

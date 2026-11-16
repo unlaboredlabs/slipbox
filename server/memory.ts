@@ -40,6 +40,8 @@ export interface ReadResult {
 }
 
 const OUTSIDE = "outside";
+const MAX_QUERY = 2000;
+const DAY = 24 * 60 * 60 * 1000;
 
 export class Memory {
   readonly files: Files;
@@ -49,10 +51,11 @@ export class Memory {
   private locks = new Locks();
   private watcher: FSWatcher | null = null;
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private pruner: ReturnType<typeof setInterval> | null = null;
 
   private constructor(
     readonly store: Store,
-    private opts: MemoryOptions,
+    opts: MemoryOptions,
   ) {
     this.files = new Files(opts.dataDir, opts.maxFileBytes);
     this.git = new Git(this.files.root);
@@ -65,6 +68,9 @@ export class Memory {
     await m.git.init();
     await m.reconcileAll();
     await m.embeddings.init();
+    await m.events.prune();
+    m.pruner = setInterval(() => m.events.prune(), DAY);
+    m.pruner.unref?.();
     if (opts.watch) m.startWatching();
     return m;
   }
@@ -72,6 +78,9 @@ export class Memory {
   async close() {
     this.watcher?.close();
     for (const t of this.timers.values()) clearTimeout(t);
+    if (this.pruner) clearInterval(this.pruner);
+    // Let writes in flight commit, so none is left on disk for the next start to call "outside".
+    await this.locks.drain(10_000);
     this.embeddings.close();
     // Let a batch in flight finish, but never wait long on the model.
     await Promise.race([this.embeddings.settle(), Bun.sleep(2000)]);
@@ -141,6 +150,12 @@ export class Memory {
       const m = /^\s*(\d+)\s*(?:-\s*(\d+)?)?\s*$/.exec(opts.lines);
       if (!m) throw new UserError("bad_lines", 'lines is a range like "10-40", "10-" or "10".');
       const start = Math.max(1, Number(m[1]));
+      if (start > all.length) {
+        throw new UserError("bad_lines", `lines ${opts.lines.trim()} is past the end: ${path} has ${all.length} lines.`);
+      }
+      if (m[2] && Number(m[2]) < start) {
+        throw new UserError("bad_lines", `lines ${opts.lines.trim()} is reversed; give the first line first, like "10-40".`);
+      }
       const end = Math.min(all.length, m[2] ? Number(m[2]) : opts.lines.includes("-") ? all.length : start);
       result.content = all.slice(start - 1, end).join("\n");
       result.lines = { start, end, total: all.length };
@@ -150,7 +165,11 @@ export class Memory {
 
   async search(caller: Caller, query: string, path?: string, limit = 10) {
     if (!query?.trim()) throw new UserError("bad_query", "query is empty.");
+    if (query.length > MAX_QUERY) {
+      throw new UserError("bad_query", `query is ${query.length} characters; the cap is ${MAX_QUERY}. Search with the words that matter.`);
+    }
     const dir = dirPath(path);
+    if (!canSeeDir(caller, dir)) throw new UserError("forbidden", `This key may not read ${dir}.`, 403);
     let scope = readScope(caller);
     if (dir) scope = scope === null ? [dir] : narrow(scope, dir);
     return hybridSearch(this.store, this.embeddings, query, scope, Math.min(Math.max(limit, 1), 50));
@@ -159,7 +178,9 @@ export class Memory {
   async history(caller: Caller, path: string, limit = 20) {
     path = filePath(path);
     requireRead(caller, path);
-    return { versions: await this.git.history(path, Math.min(Math.max(limit, 1), 1000)) };
+    const versions = await this.git.history(path, Math.min(Math.max(limit, 1), 1000));
+    if (!versions.length && !this.files.exists(path)) throw new UserError("not_found", `${path} does not exist and has no history.`, 404);
+    return { versions };
   }
 
   async diff(caller: Caller, path: string, from: string | undefined, to: string) {
@@ -175,6 +196,9 @@ export class Memory {
     requireWrite(caller, path);
     checkWhy(why);
     if (typeof content !== "string") throw new UserError("bad_content", "content must be text.");
+    if (baseVersion !== undefined && baseVersion.trim().length < 7) {
+      throw new UserError("bad_version", `baseVersion "${baseVersion}" is too short; pass the version that read returned.`);
+    }
     this.files.checkSize(path, content);
     return this.locks.run(path, async () => {
       const current = await this.files.read(path);
@@ -254,24 +278,34 @@ export class Memory {
   /** Writes (or removes, when next is null) a file, commits it and indexes it. Call with the path's lock held. */
   private async commitChange(caller: Caller, path: string, current: string | null, next: string | null, why: string) {
     if (next === current) return { path, version: next === null ? null : versionOf(next), commit: null as string | null };
-    if (next === null) this.files.remove(path);
-    else await this.files.write(path, next);
     let commit: string | null;
     try {
+      if (next === null) this.files.remove(path);
+      else await this.files.write(path, next);
       commit = await this.git.commit([path], caller.name, why);
     } catch (err) {
       // Put the file back so disk and history stay in step.
-      if (current === null) this.files.remove(path);
-      else await this.files.write(path, current);
+      try {
+        if (current === null) this.files.remove(path);
+        else await this.files.write(path, current);
+      } catch (undo) {
+        console.error(`could not put ${path} back:`, undo);
+      }
       throw err;
     }
-    await this.indexFile(path, next);
+    try {
+      await this.indexFile(path, next);
+    } catch (err) {
+      // The change is committed, so it is not an error for the caller. The
+      // watcher (or the next start) re-indexes the file by its hash.
+      console.error(`could not index ${path}:`, err);
+    }
     return { path, version: next === null ? null : versionOf(next), commit };
   }
 
   // Indexing
 
-  private async indexFile(path: string, content: string | null) {
+  private async indexFile(path: string, content: string | null, hash = content === null ? "" : versionOf(content)) {
     if (content === null) {
       await this.store.deleteDoc(path);
       this.embeddings.dropDoc(path);
@@ -282,7 +316,7 @@ export class Memory {
       path,
       title,
       summary,
-      hash: versionOf(content),
+      hash,
       bytes: byteLength(content),
       updatedAt: new Date().toISOString(),
     };
@@ -290,15 +324,36 @@ export class Memory {
     this.embeddings.setDoc(path, ids.map((id, i) => ({ id, textHash: sections[i].textHash })));
   }
 
-  /** Brings the index in line with the files, by content hash, and commits outside changes. */
-  async reconcileAll() {
+  /**
+   * At start, before any request: brings the index in line with the files, by
+   * content hash, and commits outside changes in one commit. One bad file
+   * never stops the start.
+   */
+  private async reconcileAll() {
     const paths = new Set([...this.files.allFiles(), ...(await this.store.docHashes()).keys()]);
-    for (const path of paths) await this.syncPath(path);
+    for (const path of paths) await this.syncPath(path).catch((err) => console.error(`could not index ${path}:`, err));
     if (await this.git.dirty()) await this.git.commit([], OUTSIDE, `Changes made outside ${NAME}`);
+  }
+
+  /** The same for one folder while running: each outside change is committed under its file's lock. */
+  private async reconcileDir(dir: string) {
+    const paths = new Set([...this.files.allFiles(dir), ...(await this.store.docsUnder(dir)).map((d) => d.path)]);
+    for (const path of paths) await this.syncPath(path).catch((err) => console.error(`could not index ${path}:`, err));
+    for (const path of await this.git.changed(dir)) {
+      if (isNotePath(path)) await this.commitOutside(path);
+    }
   }
 
   private async reconcilePath(path: string) {
     await this.syncPath(path);
+    await this.commitOutside(path);
+  }
+
+  /**
+   * Commits a change made outside. Under the file's lock, so a write of the
+   * server's own that waits for git is never taken in and authored "outside".
+   */
+  private async commitOutside(path: string) {
     await this.locks.run(path, async () => {
       if (await this.git.dirty(path)) await this.git.commit([path], OUTSIDE, `Change to ${path} made outside ${NAME}`);
     });
@@ -307,29 +362,40 @@ export class Memory {
   /**
    * Re-indexes one file if it differs from the index. The comparison is made
    * under the file's lock with the index as it is then, so a file the server
-   * has just written itself is left alone.
+   * has just written itself is left alone. A file that is not UTF-8 is indexed
+   * as empty.
    */
   private async syncPath(path: string) {
     await this.locks.run(path, async () => {
-      const content = await this.files.read(path);
+      let content: string | null;
+      let hash: string | undefined;
+      try {
+        content = await this.files.read(path);
+      } catch (err) {
+        if (!(err instanceof UserError && err.code === "not_text")) throw err;
+        content = "";
+        hash = err.details!.version as string;
+      }
+      hash ??= content === null ? undefined : versionOf(content);
       const known = await this.store.getDoc(path);
-      if (content === null ? known !== null : known?.hash !== versionOf(content)) await this.indexFile(path, content);
+      if (hash === undefined ? known !== null : known?.hash !== hash) await this.indexFile(path, content, hash);
     });
   }
 
   private startWatching() {
     try {
       this.watcher = watch(this.files.root, { recursive: true }, (_event, name) => {
-        const rel = String(name ?? "").split("\\").join("/");
-        if (!rel || rel === ".git" || rel.startsWith(".git/")) return;
-        let path: string | null = null;
+        const rel = String(name ?? "").split("\\").join("/").replace(/\/+$/, "");
+        // .git, the temporary files of a write, and other hidden names.
+        if (!rel || rel.split("/").some((s) => s.startsWith("."))) return;
+        let key: string;
         try {
-          path = rel.endsWith(".md") ? filePath(rel) : null;
+          key = rel.endsWith(".md") ? filePath(rel) : dirPath(rel);
         } catch {
-          return; // not a valid note path
+          return; // not a valid note or folder path
         }
-        // A folder change (rename, removal) is handled by a full reconcile.
-        this.debounce(path ?? "*", () => (path ? this.reconcilePath(path) : this.reconcileAll()));
+        // A folder change (create, rename, removal) reconciles that folder only.
+        this.debounce(key, () => (key.endsWith(".md") ? this.reconcilePath(key) : this.reconcileDir(key)));
       });
     } catch (err) {
       console.error("file watcher unavailable; outside changes are picked up on restart:", err);
@@ -351,6 +417,14 @@ export class Memory {
 function checkWhy(why: unknown) {
   if (typeof why !== "string" || !oneLine(why)) {
     throw new UserError("bad_why", "why is required: one line saying why this change is made.");
+  }
+}
+
+function isNotePath(path: string): boolean {
+  try {
+    return filePath(path) === path;
+  } catch {
+    return false;
   }
 }
 
