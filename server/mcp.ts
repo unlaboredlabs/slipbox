@@ -85,7 +85,7 @@ const tools = (memory: Memory): ToolDef[] => [
   {
     name: "start",
     description:
-      "What to load first: who you are, shared/profile.md and every profile.md from the root down to `path`, then the map of `path` (its folders and files with last change and one-line summary, up to 200). Call this at the start of a task.",
+      "What to load first: who you are, every profile.md from the root down to `path` (and shared/profile.md), then the map of `path` as list gives it. Call this at the start of a task.",
     input: { path: z.string().optional().describe('A folder such as "projects/shop"; the root if omitted.') },
     annotations: { readOnlyHint: true },
     event: (a) => ({ path: a.path ?? "" }),
@@ -110,7 +110,7 @@ const tools = (memory: Memory): ToolDef[] => [
   {
     name: "search",
     description:
-      "Search notes by words and by meaning. Returns the matching files, best first: path and last change, the matching sections as line ranges with headings and whether words, meaning or both matched, and a snippet that keeps the note's lines. Read a section with read(path, lines).",
+      "Search notes by words and by meaning. Returns matching files, best first, each with its last change, its matching sections (line range, heading, matched by words, meaning or both) and a snippet. Read a section with read(path, lines).",
     input: {
       query: z.string().describe("What you are looking for, in plain words."),
       path: z.string().optional().describe("Only search under this folder."),
@@ -177,9 +177,9 @@ const tools = (memory: Memory): ToolDef[] => [
   {
     name: "history",
     description:
-      "A note's versions, newest first: version, time (UTC), agent and why; read accepts a version from here. Given a folder, the latest changes to the notes under it: what changed since you last looked.",
+      "A note's versions, newest first (version, UTC time, agent, why); read accepts a version. For a folder: its latest changes, to see what changed since you last looked.",
     input: {
-      path: z.string().optional().describe('A file such as "shared/conventions.md", or a folder such as "projects/shop" (the root if omitted).'),
+      path: z.string().optional().describe('A file such as "shared/conventions.md", or a folder (the root if omitted).'),
       limit: z.number().int().min(1).max(1000).optional().describe("Number of versions or changes, 20 by default."),
     },
     annotations: { readOnlyHint: true },
