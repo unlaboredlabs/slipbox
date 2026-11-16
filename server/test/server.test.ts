@@ -28,7 +28,7 @@ describe(`server (${backend})`, () => {
   let reader: Client;
   let readerKey: string;
 
-  const api = (path: string, init: RequestInit = {}) =>
+  const api = (path: string, init: RequestInit = {}): Promise<Omit<Response, "json"> & { json(): Promise<any> }> =>
     fetch(app.url + path, {
       ...init,
       headers: { Authorization: `Bearer ${ADMIN_TOKEN}`, "Content-Type": "application/json", ...init.headers },

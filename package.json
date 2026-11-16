@@ -1,9 +1,22 @@
 {
-  "name": "context-engine",
-  "version": "0.1.0",
+  "name": "slipbox",
+  "version": "0.0.0",
+  "description": "A shared memory for agents: Markdown files with git history, searched by words and meaning, over MCP.",
   "private": true,
   "type": "module",
   "license": "MIT",
+  "repository": "github:unlaboredlabs/slipbox",
+  "bin": {
+    "slipbox": "server/cli.ts"
+  },
+  "scripts": {
+    "serve": "bun server/cli.ts serve",
+    "dev": "bun --watch server/cli.ts serve",
+    "test": "bun test",
+    "typecheck": "tsc -p .",
+    "reindex": "bun server/cli.ts reindex",
+    "build": "bun server/build.ts"
+  },
   "dependencies": {
     "@huggingface/transformers": "^4.3.2",
     "@modelcontextprotocol/sdk": "^1.32.2",
