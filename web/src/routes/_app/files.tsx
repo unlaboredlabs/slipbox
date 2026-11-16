@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FileTextIcon, HistoryIcon, LoaderIcon, RotateCcwIcon, XIcon } from "lucide-react";
-import { api, type FileDoc, type Version } from "@/lib/api";
+import { keepPreviousData, queryOptions, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { FileTextIcon, HistoryIcon, LoaderIcon, RotateCcwIcon, Trash2Icon, XIcon } from "lucide-react";
+import { ApiError, api, type FileDoc, type Version } from "@/lib/api";
 import { cn, formatBytes, formatDate, timeAgo } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -16,18 +16,21 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
+  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { ErrorState, Placeholder } from "@/components/states";
 import { FileTree } from "@/components/files/tree";
 import { MarkdownView } from "@/components/files/markdown";
 import { DiffView } from "@/components/files/diff";
 
-type FilesSearch = { path?: string; commit?: string };
+/** `lines` ("12-30") scrolls the note to a search result. */
+type FilesSearch = { path?: string; commit?: string; lines?: string };
 
 export const Route = createFileRoute("/_app/files")({
   validateSearch: (search: Record<string, unknown>): FilesSearch => ({
     path: typeof search.path === "string" && search.path ? search.path : undefined,
     commit: typeof search.commit === "string" && search.commit ? search.commit : undefined,
+    lines: typeof search.lines === "string" && /^\d+(-\d+)?$/.test(search.lines) ? search.lines : undefined,
   }),
   component: FilesPage,
 });
@@ -35,7 +38,7 @@ export const Route = createFileRoute("/_app/files")({
 const HISTORY_OPEN = "historyOpen";
 
 function FilesPage() {
-  const { path, commit } = Route.useSearch();
+  const { path, commit, lines } = Route.useSearch();
   const [historyOpen, setHistoryOpen] = useState(() => localStorage.getItem(HISTORY_OPEN) === "1");
   const showHistory = Boolean(path) && (historyOpen || Boolean(commit));
   const navigate = useNavigate({ from: Route.fullPath });
@@ -48,46 +51,64 @@ function FilesPage() {
   }
 
   return (
-    <div className="flex min-h-0 flex-1">
-      <aside className="flex w-64 shrink-0 flex-col overflow-y-auto px-2 pt-4 pb-6">
+    <div className="relative flex min-h-0 flex-1">
+      <aside className="flex w-64 shrink-0 flex-col overflow-y-auto px-2 pt-4 pb-6 max-md:w-48">
         <FileTree selected={path} />
       </aside>
-      <section className="flex min-w-0 flex-1 flex-col">
-        {path ? (
-          <FileView key={path} path={path} commit={commit} historyOpen={showHistory} onToggleHistory={toggleHistory} />
-        ) : (
+      {path ? (
+        <OpenFile key={path} path={path} commit={commit} lines={lines} historyOpen={showHistory} onToggleHistory={toggleHistory} />
+      ) : (
+        <section className="flex min-w-0 flex-1 flex-col">
           <Placeholder icon={FileTextIcon} title="Choose a file" />
-        )}
-      </section>
-      {path && showHistory && <HistoryPanel path={path} selected={commit} onClose={toggleHistory} />}
+        </section>
+      )}
     </div>
   );
 }
 
-function FileView({
-  path,
-  commit,
-  historyOpen,
-  onToggleHistory,
-}: {
-  path: string;
-  commit?: string;
-  historyOpen: boolean;
-  onToggleHistory: () => void;
-}) {
+// History loads a page of versions plus one more: the extra one is the base of the last row's diff.
+const PAGE = 100;
+const MAX = 999; // the server returns at most 1000
+
+const historyQuery = (path: string, limit: number) =>
+  queryOptions({ queryKey: ["history", path, limit], queryFn: () => api.history(path, limit + 1), placeholderData: keepPreviousData });
+
+type OpenFileProps = { path: string; commit?: string; lines?: string; historyOpen: boolean; onToggleHistory: () => void };
+
+function OpenFile(props: OpenFileProps) {
+  const [limit, setLimit] = useState(PAGE);
+  return (
+    <>
+      <section className="flex min-w-0 flex-1 flex-col">
+        <FileView {...props} limit={limit} />
+      </section>
+      {props.historyOpen && (
+        <HistoryPanel path={props.path} selected={props.commit} limit={limit} onMore={() => setLimit(Math.min(MAX, limit + PAGE))} onClose={props.onToggleHistory} />
+      )}
+    </>
+  );
+}
+
+function FileView({ path, commit, lines, historyOpen, onToggleHistory, limit }: OpenFileProps & { limit: number }) {
   const file = useQuery({ queryKey: ["file", path], queryFn: () => api.file(path) });
   const segments = path.split("/");
 
   return (
     <>
       <header className="flex h-14 shrink-0 items-center gap-3 px-6">
-        <nav className="flex min-w-0 items-center gap-1.5 text-[13px] text-muted-foreground">
-          {segments.map((segment, i) => (
-            <span key={i} className="flex min-w-0 items-center gap-1.5">
-              {i > 0 && <span className="text-muted-foreground/40">/</span>}
-              <span className={cn("truncate", i === segments.length - 1 && "text-foreground")}>{segment}</span>
-            </span>
-          ))}
+        {/* Segments shrink in proportion to their length, so a long file name gives way before short folders do. */}
+        <nav className="flex min-w-0 items-center gap-1.5 overflow-hidden text-[13px] text-muted-foreground">
+          {segments.map((segment, i) => {
+            const last = i === segments.length - 1;
+            return (
+              <span key={i} className={cn("flex min-w-0 items-center gap-1.5", last && "min-w-[6ch]")}>
+                {i > 0 && <span className="text-muted-foreground/40">/</span>}
+                <span className={cn("truncate", last && "text-foreground")} title={last ? path : undefined}>
+                  {segment}
+                </span>
+              </span>
+            );
+          })}
         </nav>
         <div className="ml-auto flex shrink-0 items-center gap-3">
           {file.data && (
@@ -111,25 +132,50 @@ function FileView({
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {commit ? (
-          <VersionDiff path={path} commit={commit} />
+          <VersionDiff path={path} commit={commit} limit={limit} />
         ) : file.isPending ? (
           <FileSkeleton />
         ) : file.error ? (
-          <ErrorState error={file.error} onRetry={file.refetch} />
+          file.error instanceof ApiError && file.error.status === 404 ? (
+            <Missing path={path} error={file.error} limit={limit} />
+          ) : (
+            <ErrorState error={file.error} onRetry={file.refetch} />
+          )
         ) : (
-          <Document doc={file.data} />
+          <Document doc={file.data} lines={lines} />
         )}
       </div>
     </>
   );
 }
 
-function Document({ doc }: { doc: FileDoc }) {
+function Document({ doc, lines }: { doc: FileDoc; lines?: string }) {
   return (
     <article className="mx-auto w-full max-w-[720px] px-8 pt-6 pb-24">
-      <h1 className="mb-5 text-[26px] leading-tight font-semibold tracking-[-0.02em]">{doc.title || doc.path.split("/").pop()}</h1>
-      {doc.content.trim() ? <MarkdownView content={doc.content} skipTitle={Boolean(doc.title)} /> : <p className="text-muted-foreground">Empty file</p>}
+      <h1 className="mb-5 text-[26px] leading-tight font-semibold tracking-[-0.02em] [overflow-wrap:anywhere]">{doc.title || doc.path.split("/").pop()}</h1>
+      {doc.content.trim() ? (
+        <MarkdownView content={doc.content} path={doc.path} skipTitle={Boolean(doc.title)} lines={lines} />
+      ) : (
+        <p className="text-muted-foreground">Empty file</p>
+      )}
     </article>
+  );
+}
+
+/** A file that isn't there: if an agent deleted it, says who and when and leads to the last version, which can be restored. */
+function Missing({ path, error, limit }: { path: string; error: ApiError; limit: number }) {
+  const history = useQuery(historyQuery(path, limit));
+  const navigate = useNavigate({ from: Route.fullPath });
+  const [head, before] = history.data?.versions ?? [];
+  if (history.isPending) return <FileSkeleton />;
+  if (head?.version !== null || !before) return <ErrorState error={error} />;
+  return (
+    <Placeholder icon={Trash2Icon} title={`Deleted by ${head.agent} ${timeAgo(head.at)}`}>
+      <Button variant="outline" size="sm" onClick={() => navigate({ search: { path, commit: before.commit } })}>
+        <HistoryIcon className="size-3.5" />
+        Last version
+      </Button>
+    </Placeholder>
   );
 }
 
@@ -144,13 +190,26 @@ function FileSkeleton() {
   );
 }
 
-const historyKey = (path: string) => ["history", path] as const;
+function HistoryPanel({
+  path,
+  selected,
+  limit,
+  onMore,
+  onClose,
+}: {
+  path: string;
+  selected?: string;
+  limit: number;
+  onMore: () => void;
+  onClose: () => void;
+}) {
+  const history = useQuery(historyQuery(path, limit));
+  const versions = history.data?.versions.slice(0, limit) ?? [];
+  const more = (history.data?.versions.length ?? 0) > limit && limit < MAX;
 
-function HistoryPanel({ path, selected, onClose }: { path: string; selected?: string; onClose: () => void }) {
-  const history = useQuery({ queryKey: historyKey(path), queryFn: () => api.history(path) });
-
+  // Below xl it lies over the note rather than squeezing it.
   return (
-    <aside className="flex w-72 shrink-0 flex-col">
+    <aside className="flex w-72 shrink-0 flex-col max-xl:absolute max-xl:inset-y-0 max-xl:right-0 max-xl:z-20 max-xl:bg-popover max-xl:shadow-xl max-md:w-64">
       <header className="flex h-14 shrink-0 items-center justify-between pr-3 pl-5">
         <h2 className="text-[13px] font-medium">History</h2>
         <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close history">
@@ -169,15 +228,28 @@ function HistoryPanel({ path, selected, onClose }: { path: string; selected?: st
           </div>
         ) : history.error ? (
           <ErrorState error={history.error} onRetry={history.refetch} />
-        ) : history.data.versions.length === 0 ? (
+        ) : versions.length === 0 ? (
           <Placeholder title="No history" />
         ) : (
           <ol className="flex flex-col gap-px">
-            {history.data.versions.map((v, i) => (
+            {versions.map((v, i) => (
               <li key={v.commit}>
                 <VersionRow version={v} path={path} current={i === 0} selected={v.commit === selected} />
               </li>
             ))}
+            {more && (
+              <li>
+                <button
+                  type="button"
+                  onClick={onMore}
+                  disabled={history.isFetching}
+                  className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                >
+                  {history.isFetching && <LoaderIcon className="size-3.5 animate-spin" />}
+                  Show older
+                </button>
+              </li>
+            )}
           </ol>
         )}
       </div>
@@ -203,15 +275,15 @@ function VersionRow({ version, path, current, selected }: { version: Version; pa
         {version.version === null ? (
           <span className="ml-auto shrink-0 text-[11px] text-removed-strong">Deleted</span>
         ) : (
-          current && <span className="ml-auto shrink-0 text-[11px] text-muted-foreground/80">Current</span>
+          current && <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">Current</span>
         )}
       </span>
     </button>
   );
 }
 
-function VersionDiff({ path, commit }: { path: string; commit: string }) {
-  const history = useQuery({ queryKey: historyKey(path), queryFn: () => api.history(path) });
+function VersionDiff({ path, commit, limit }: { path: string; commit: string; limit: number }) {
+  const history = useQuery(historyQuery(path, limit));
   const versions = history.data?.versions ?? [];
   const index = versions.findIndex((v) => v.commit === commit);
   const version = versions[index];
@@ -263,7 +335,7 @@ function RestoreButton({ path, version }: { path: string; version: Version }) {
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["file", path] }),
-        queryClient.invalidateQueries({ queryKey: historyKey(path) }),
+        queryClient.invalidateQueries({ queryKey: ["history", path] }),
         queryClient.invalidateQueries({ queryKey: ["tree"] }),
       ]);
       setOpen(false);
@@ -273,10 +345,12 @@ function RestoreButton({ path, version }: { path: string; version: Version }) {
 
   return (
     <AlertDialog open={open} onOpenChange={(next) => !restore.isPending && (setOpen(next), restore.reset())}>
-      <Button variant="outline" size="sm" className="ml-auto" onClick={() => setOpen(true)}>
-        <RotateCcwIcon className="size-3.5" />
-        Restore
-      </Button>
+      <AlertDialogTrigger asChild>
+        <Button variant="outline" size="sm" className="ml-auto">
+          <RotateCcwIcon className="size-3.5" />
+          Restore
+        </Button>
+      </AlertDialogTrigger>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Restore this version?</AlertDialogTitle>

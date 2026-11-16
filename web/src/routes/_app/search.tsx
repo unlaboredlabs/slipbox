@@ -19,8 +19,6 @@ export const Route = createFileRoute("/_app/search")({
   component: SearchPage,
 });
 
-const LIMIT = 20;
-
 function SearchPage() {
   const { q, path } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
@@ -29,7 +27,8 @@ function SearchPage() {
 
   const results = useQuery({
     queryKey: ["search", q, path],
-    queryFn: () => api.search(q!, path, LIMIT),
+    // No limit: the server's default, the number an agent gets.
+    queryFn: () => api.search(q!, path),
     enabled: Boolean(q),
     staleTime: 0,
   });
@@ -108,7 +107,7 @@ function SearchPage() {
 
 function Result({ result }: { result: SearchResult }) {
   return (
-    <Link to="/files" search={{ path: result.path }} className="group flex flex-col gap-1 rounded-lg px-3 py-2.5 transition-colors hover:bg-accent/70">
+    <Link to="/files" search={{ path: result.path, lines: `${result.startLine}-${result.endLine}` }} className="group flex flex-col gap-1 rounded-lg px-3 py-2.5 transition-colors hover:bg-accent/70">
       <div className="flex items-baseline gap-2">
         <span className="min-w-0 truncate text-[13.5px]">
           <span className="text-link group-hover:underline">{result.path}</span>
@@ -161,6 +160,7 @@ function IndexHealth() {
   if (health.error) return <span className="text-xs text-destructive">Index health unavailable</span>;
 
   const { embed } = health.data;
+  if (embed.model === "off") return <span className="text-xs text-muted-foreground">Meaning search off</span>;
   return (
     <div className="flex items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
       <Hint label={embed.model}>

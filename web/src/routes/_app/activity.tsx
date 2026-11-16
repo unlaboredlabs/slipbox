@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo } from "react";
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { createColumnHelper, getCoreRowModel, useReactTable } from "@tanstack/react-table";
 import { ActivityIcon } from "lucide-react";
-import { api, followEvents, type ActivityEvent } from "@/lib/api";
-import { cn, formatDate, formatTime, isToday } from "@/lib/utils";
+import { api, type ActivityEvent } from "@/lib/api";
+import { arrivedAt, eventsQuery, useLive } from "@/lib/live";
+import { cn, formatDate, formatDayTime, formatTime, isToday } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/ui/tooltip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -21,69 +22,34 @@ export const Route = createFileRoute("/_app/activity")({
   component: ActivityPage,
 });
 
-const EVENTS_KEY = ["events"] as const;
-const KEEP = 1000;
-
-/** Merges events newest first, without duplicates, keeping the latest KEEP. */
-function merge(current: ActivityEvent[] | undefined, incoming: ActivityEvent[]) {
-  const byId = new Map((current ?? []).map((e) => [e.id, e]));
-  for (const e of incoming) byId.set(e.id, e);
-  return [...byId.values()].sort((a, b) => b.id - a.id).slice(0, KEEP);
-}
-
-const loadEvents = async () => (await api.events({ limit: 500 })).events;
-
-/** Loads recent events, then keeps them current from the stream. */
-function useLiveEvents() {
-  const queryClient = useQueryClient();
-  const [live, setLive] = useState(false);
-  const fresh = useRef(new Set<number>());
-
-  const query = useQuery({ queryKey: EVENTS_KEY, queryFn: loadEvents, staleTime: Infinity });
-
-  useEffect(() => {
-    // Waits for the first load (shared with the query above), so nothing that
-    // arrives before it is dropped.
-    const loaded = () => queryClient.ensureQueryData({ queryKey: EVENTS_KEY, queryFn: loadEvents });
-    const add = async (incoming: ActivityEvent[], highlight: boolean) => {
-      if (highlight) for (const e of incoming) fresh.current.add(e.id);
-      await loaded().catch(() => undefined);
-      queryClient.setQueryData<ActivityEvent[]>(EVENTS_KEY, (current) => (current ? merge(current, incoming) : current));
-    };
-    return followEvents({
-      onEvent: (event) => add([event], true),
-      onStatus: setLive,
-      // Fill anything missed before the stream opened, or while it was down.
-      onOpen: async () => {
-        const latest = (await loaded().catch(() => undefined))?.[0]?.id ?? 0;
-        const { events } = await api.events({ after: latest, limit: 500 }).catch(() => ({ events: [] }));
-        add(events, true);
-      },
-    });
-  }, [queryClient]);
-
-  return { ...query, live, fresh: fresh.current };
-}
-
 const column = createColumnHelper<ActivityEvent>();
 
+// Plain titles rather than tooltips: a burst of events renders a thousand rows a few times a second.
 const columns = [
   column.accessor("at", {
     header: "Time",
-    meta: { width: 120 },
+    meta: { width: 140 },
     cell: ({ getValue }) => {
       const at = getValue();
       return (
-        <Hint label={formatDate(at)}>
-          <span className="text-muted-foreground tabular-nums">
-            {isToday(at) ? formatTime(at) : new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
-          </span>
-        </Hint>
+        <span title={formatDate(at)} className="text-muted-foreground tabular-nums">
+          {isToday(at) ? formatTime(at) : formatDayTime(at)}
+        </span>
       );
     },
   }),
   column.accessor("agent", { header: "Agent", meta: { width: 150 }, cell: ({ getValue }) => <span className="font-medium">{getValue()}</span> }),
-  column.accessor("action", { header: "Action", meta: { width: 110 }, cell: ({ getValue }) => <span className="text-muted-foreground">{getValue()}</span> }),
+  column.accessor("action", {
+    header: "Action",
+    meta: { width: 120 },
+    cell: ({ row }) => (
+      <span className="flex items-center gap-2 text-muted-foreground">
+        <span title={row.original.ok ? "Succeeded" : "Failed"} className={cn("size-1.5 shrink-0 rounded-full", row.original.ok ? "bg-ok/70" : "bg-destructive")} />
+        {row.original.action}
+        {!row.original.ok && <span className="sr-only">(failed)</span>}
+      </span>
+    ),
+  }),
   column.display({
     id: "target",
     header: "Path or query",
@@ -91,17 +57,6 @@ const columns = [
       <span className="block truncate">
         <Target event={row.original} />
       </span>
-    ),
-  }),
-  column.accessor("ok", {
-    header: () => <span className="sr-only">Result</span>,
-    meta: { width: 44 },
-    cell: ({ getValue }) => (
-      <Hint label={getValue() ? "Succeeded" : "Failed"}>
-        <span className="flex justify-center">
-          <span className={cn("size-1.5 rounded-full", getValue() ? "bg-ok/70" : "bg-destructive")} />
-        </span>
-      </Hint>
     ),
   }),
 ];
@@ -115,7 +70,7 @@ function Target({ event }: { event: ActivityEvent }) {
       </Link>
     );
   if (event.path) return <span className="text-foreground/80">{event.path}</span>;
-  return <span className="text-muted-foreground/50">—</span>;
+  return <span className="text-muted-foreground">—</span>;
 }
 
 const ALL = "__all";
@@ -123,7 +78,9 @@ const ALL = "__all";
 function ActivityPage() {
   const { agent, action } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
-  const { data, isPending, error, refetch, live, fresh } = useLiveEvents();
+  // One agent's events come from the server, so the filter reaches past the latest rows.
+  const { data, isPending, error, refetch } = useQuery(eventsQuery(agent));
+  const live = useLive();
   const agents = useQuery({ queryKey: ["agents"], queryFn: api.agents });
 
   const agentNames = useMemo(
@@ -131,7 +88,7 @@ function ActivityPage() {
     [agents.data, data],
   );
   const actions = useMemo(() => [...new Set(data?.map((e) => e.action) ?? [])].sort(), [data]);
-  const rows = useMemo(() => (data ?? []).filter((e) => (!agent || e.agent === agent) && (!action || e.action === action)), [data, agent, action]);
+  const rows = useMemo(() => (data ?? []).filter((e) => !action || e.action === action), [data, action]);
 
   const table = useReactTable({ data: rows, columns, getCoreRowModel: getCoreRowModel(), autoResetPageIndex: false, getRowId: (e) => String(e.id) });
   const setFilter = (patch: ActivitySearch) => navigate({ search: (prev) => ({ ...prev, ...patch }), replace: true });
@@ -156,7 +113,7 @@ function ActivityPage() {
           <TableSkeleton />
         ) : error ? (
           <ErrorState error={error} onRetry={refetch} />
-        ) : data.length === 0 ? (
+        ) : data.length === 0 && !agent ? (
           <Placeholder icon={ActivityIcon} title="No activity yet" />
         ) : rows.length === 0 ? (
           <Placeholder title="Nothing matches these filters">
@@ -165,7 +122,7 @@ function ActivityPage() {
             </Button>
           </Placeholder>
         ) : (
-          <DataTable table={table} rowClassName={(e) => (fresh.has(e.id) ? "row-in" : undefined)} />
+          <DataTable table={table} rowClassName={(e) => (Date.now() - (arrivedAt.get(e.id) ?? 0) < 1600 ? "row-in" : undefined)} />
         )}
       </div>
     </>

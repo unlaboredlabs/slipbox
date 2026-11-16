@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createColumnHelper, getCoreRowModel, useReactTable } from "@tanstack/react-table";
@@ -32,7 +32,9 @@ type Dialogs = { kind: "create" } | { kind: "edit"; agent: Agent } | { kind: "re
 
 const column = createColumnHelper<Agent>();
 
-function agentColumns(open: (dialog: Dialogs) => void) {
+type Open = (dialog: Dialogs, opener: HTMLElement | null) => void;
+
+function agentColumns(open: Open) {
   return [
     column.accessor("name", { header: "Name", meta: { width: 180 }, cell: ({ getValue }) => <span className="font-medium">{getValue()}</span> }),
     column.accessor("grants", {
@@ -51,39 +53,62 @@ function agentColumns(open: (dialog: Dialogs) => void) {
     column.accessor("revoked", {
       header: "State",
       meta: { width: 100 },
-      cell: ({ getValue }) => <span className={cn(getValue() ? "text-muted-foreground" : "text-foreground/80")}>{getValue() ? "Revoked" : "Active"}</span>,
+      // A revoked agent's name can be given to a new key: the date tells the two rows apart.
+      cell: ({ row, getValue }) =>
+        getValue() ? (
+          <Hint label={`Created ${formatDate(row.original.createdAt)}`}>
+            <span className="text-muted-foreground">Revoked</span>
+          </Hint>
+        ) : (
+          <span className="text-foreground/80">Active</span>
+        ),
     }),
     column.display({
       id: "actions",
       meta: { width: 56 },
-      cell: ({ row }) =>
-        row.original.revoked ? null : (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${row.original.name}`} className="opacity-60 group-hover:opacity-100 data-[state=open]:opacity-100">
-                <MoreHorizontalIcon />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={() => open({ kind: "edit", agent: row.original })}>
-                <PencilIcon />
-                Edit grants
-              </DropdownMenuItem>
-              <DropdownMenuItem variant="destructive" onSelect={() => open({ kind: "revoke", agent: row.original })}>
-                <BanIcon />
-                Revoke
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ),
+      cell: ({ row }) => (row.original.revoked ? null : <RowActions agent={row.original} open={open} />),
     }),
   ];
+}
+
+function RowActions({ agent, open }: { agent: Agent; open: Open }) {
+  const trigger = useRef<HTMLButtonElement>(null);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button ref={trigger} variant="ghost" size="icon-sm" aria-label={`Actions for ${agent.name}`} className="opacity-60 group-hover:opacity-100 data-[state=open]:opacity-100">
+          <MoreHorizontalIcon />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={() => open({ kind: "edit", agent }, trigger.current)}>
+          <PencilIcon />
+          Edit grants
+        </DropdownMenuItem>
+        <DropdownMenuItem variant="destructive" onSelect={() => open({ kind: "revoke", agent }, trigger.current)}>
+          <BanIcon />
+          Revoke
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 }
 
 function AgentsPage() {
   const agents = useQuery({ queryKey: AGENTS_KEY, queryFn: api.agents, refetchInterval: 30_000 });
   const [dialog, setDialog] = useState<Dialogs>(null);
   const close = () => setDialog(null);
+  // Dialogs open from a menu or a button, not a dialog trigger: focus goes back to what opened them.
+  const opener = useRef<HTMLElement | null>(null);
+  const open = useCallback<Open>((next, from) => {
+    opener.current = from;
+    setDialog(next);
+  }, []);
+  const refocus = (event: Event) => {
+    if (!opener.current?.isConnected) return;
+    event.preventDefault();
+    opener.current.focus();
+  };
 
   // Table data and columns must keep their identity between renders: new arrays make
   // TanStack Table reset its state, which renders again, which never ends.
@@ -91,7 +116,7 @@ function AgentsPage() {
     () => [...(agents.data?.agents ?? [])].sort((a, b) => Number(a.revoked) - Number(b.revoked) || a.name.localeCompare(b.name)),
     [agents.data],
   );
-  const columns = useMemo(() => agentColumns(setDialog), []);
+  const columns = useMemo(() => agentColumns(open), [open]);
 
   const table = useReactTable({ data: rows, columns, getCoreRowModel: getCoreRowModel(), autoResetPageIndex: false, getRowId: (a) => String(a.id) });
 
@@ -99,7 +124,7 @@ function AgentsPage() {
     <>
       <PageHeader title="Agents">
         <Hint label="New key">
-          <Button variant="ghost" size="icon-sm" aria-label="New key" onClick={() => setDialog({ kind: "create" })}>
+          <Button variant="ghost" size="icon-sm" aria-label="New key" onClick={(e) => open({ kind: "create" }, e.currentTarget)}>
             <PlusIcon />
           </Button>
         </Hint>
@@ -111,7 +136,7 @@ function AgentsPage() {
           <ErrorState error={agents.error} onRetry={agents.refetch} />
         ) : rows.length === 0 ? (
           <Placeholder icon={KeyRoundIcon} title="No agents yet">
-            <Button variant="outline" size="sm" onClick={() => setDialog({ kind: "create" })}>
+            <Button variant="outline" size="sm" onClick={(e) => open({ kind: "create" }, e.currentTarget)}>
               <PlusIcon className="size-3.5" />
               New key
             </Button>
@@ -122,20 +147,20 @@ function AgentsPage() {
       </div>
 
       <Dialog open={dialog?.kind === "create"} onOpenChange={(open) => !open && close()}>
-        {dialog?.kind === "create" && <CreateKey onDone={close} />}
+        {dialog?.kind === "create" && <CreateKey onDone={close} onCloseAutoFocus={refocus} />}
       </Dialog>
       <Dialog open={dialog?.kind === "edit"} onOpenChange={(open) => !open && close()}>
-        {dialog?.kind === "edit" && <EditGrants agent={dialog.agent} onDone={close} />}
+        {dialog?.kind === "edit" && <EditGrants agent={dialog.agent} onDone={close} onCloseAutoFocus={refocus} />}
       </Dialog>
       <AlertDialog open={dialog?.kind === "revoke"} onOpenChange={(open) => !open && close()}>
-        {dialog?.kind === "revoke" && <Revoke agent={dialog.agent} onDone={close} />}
+        {dialog?.kind === "revoke" && <Revoke agent={dialog.agent} onDone={close} onCloseAutoFocus={refocus} />}
       </AlertDialog>
     </>
   );
 }
 
 function Grants({ grants }: { grants: Agent["grants"] }) {
-  if (!grants.length) return <span className="text-muted-foreground/50">—</span>;
+  if (!grants.length) return <span className="text-muted-foreground">—</span>;
   return (
     <span className="flex flex-wrap gap-1.5">
       {grants.map((g) => (
@@ -153,32 +178,48 @@ function useSaveAgents() {
   return () => queryClient.invalidateQueries({ queryKey: AGENTS_KEY });
 }
 
-function CreateKey({ onDone }: { onDone: () => void }) {
+type DialogProps = { onDone: () => void; onCloseAutoFocus: (event: Event) => void };
+
+function CreateKey({ onDone, onCloseAutoFocus }: DialogProps) {
   const refresh = useSaveAgents();
   const [name, setName] = useState("");
+  const [unnamed, setUnnamed] = useState(false);
   const [grants, setGrants] = useState<GrantDraft[]>(() => [{ ...newGrant(), prefix: "shared/" }]);
   const create = useMutation({ mutationFn: () => api.createAgent(name.trim(), cleanGrants(grants)), onSuccess: refresh });
 
-  if (create.data) return <ShowKey name={create.data.agent.name} secret={create.data.key} onDone={onDone} />;
+  if (create.data) return <ShowKey name={create.data.agent.name} secret={create.data.key} onDone={onDone} onCloseAutoFocus={onCloseAutoFocus} />;
 
   return (
-    <DialogContent>
+    <DialogContent onCloseAutoFocus={onCloseAutoFocus}>
       <form
         className="grid gap-5"
         onSubmit={(e) => {
           e.preventDefault();
           if (name.trim()) create.mutate();
+          else setUnnamed(true);
         }}
       >
         <DialogHeader>
           <DialogTitle>New key</DialogTitle>
           <DialogDescription className="sr-only">Name the agent and choose which paths it may read or write.</DialogDescription>
         </DialogHeader>
-        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Agent name" aria-label="Agent name" autoFocus spellCheck={false} autoCapitalize="off" />
+        <Input
+          value={name}
+          onChange={(e) => {
+            setName(e.target.value);
+            setUnnamed(false);
+          }}
+          placeholder="Agent name"
+          aria-label="Agent name"
+          aria-invalid={unnamed || undefined}
+          autoFocus
+          spellCheck={false}
+          autoCapitalize="off"
+        />
         <GrantsEditor value={grants} onChange={setGrants} />
-        {create.error && <p className="text-[13px] text-destructive">{create.error.message}</p>}
+        {(unnamed || create.error) && <p className="text-[13px] text-destructive">{unnamed ? "Name the agent" : create.error?.message}</p>}
         <DialogFooter>
-          <Button type="submit" disabled={!name.trim() || create.isPending}>
+          <Button type="submit" disabled={create.isPending}>
             {create.isPending && <LoaderIcon className="size-3.5 animate-spin" />}
             Create key
           </Button>
@@ -188,16 +229,24 @@ function CreateKey({ onDone }: { onDone: () => void }) {
   );
 }
 
-function ShowKey({ name, secret, onDone }: { name: string; secret: string; onDone: () => void }) {
+function ShowKey({ name, secret, onDone, onCloseAutoFocus }: DialogProps & { name: string; secret: string }) {
   const [copied, setCopied] = useState(false);
+  const [copiedOnce, setCopiedOnce] = useState(false);
   async function copy() {
     if (await copyText(secret)) {
       setCopied(true);
+      setCopiedOnce(true);
       setTimeout(() => setCopied(false), 1600);
     }
   }
   return (
-    <DialogContent onInteractOutside={(e) => e.preventDefault()}>
+    // The key can't be shown again: only Done closes it until it has been copied.
+    <DialogContent
+      showClose={copiedOnce}
+      onInteractOutside={(e) => e.preventDefault()}
+      onEscapeKeyDown={(e) => !copiedOnce && e.preventDefault()}
+      onCloseAutoFocus={onCloseAutoFocus}
+    >
       <DialogHeader>
         <DialogTitle>Key for {name}</DialogTitle>
         <DialogDescription>It won't be shown again.</DialogDescription>
@@ -234,7 +283,7 @@ async function copyText(text: string) {
   }
 }
 
-function EditGrants({ agent, onDone }: { agent: Agent; onDone: () => void }) {
+function EditGrants({ agent, onDone, onCloseAutoFocus }: DialogProps & { agent: Agent }) {
   const refresh = useSaveAgents();
   const [grants, setGrants] = useState(() => draftGrants(agent.grants));
   const save = useMutation({
@@ -246,7 +295,7 @@ function EditGrants({ agent, onDone }: { agent: Agent; onDone: () => void }) {
   });
 
   return (
-    <DialogContent>
+    <DialogContent onCloseAutoFocus={onCloseAutoFocus}>
       <form
         className="grid gap-5"
         onSubmit={(e) => {
@@ -271,7 +320,7 @@ function EditGrants({ agent, onDone }: { agent: Agent; onDone: () => void }) {
   );
 }
 
-function Revoke({ agent, onDone }: { agent: Agent; onDone: () => void }) {
+function Revoke({ agent, onDone, onCloseAutoFocus }: DialogProps & { agent: Agent }) {
   const refresh = useSaveAgents();
   const revoke = useMutation({
     mutationFn: () => api.updateAgent(agent.id, { revoked: true }),
@@ -281,7 +330,7 @@ function Revoke({ agent, onDone }: { agent: Agent; onDone: () => void }) {
     },
   });
   return (
-    <AlertDialogContent>
+    <AlertDialogContent onCloseAutoFocus={onCloseAutoFocus}>
       <AlertDialogHeader>
         <AlertDialogTitle>Revoke {agent.name}?</AlertDialogTitle>
         <AlertDialogDescription>Its key stops working at once.</AlertDialogDescription>

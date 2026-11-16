@@ -30,7 +30,7 @@ function Login() {
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     const candidate = value.trim();
-    if (!candidate) return;
+    if (!candidate) return setError("Enter the admin token");
     setPending(true);
     setError(null);
     try {
@@ -66,7 +66,7 @@ function Login() {
             <Button
               type="submit"
               size="icon-sm"
-              disabled={!value.trim() || pending}
+              disabled={pending}
               aria-label="Sign in"
               className="absolute top-1.5 right-1.5 rounded-md"
             >

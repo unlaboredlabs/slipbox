@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ChevronRightIcon } from "lucide-react";
@@ -36,7 +36,8 @@ export function FileTree({ selected }: { selected?: string }) {
     });
 
   return (
-    <div role="tree" className="flex flex-col gap-px">
+    // Plain links and buttons in Tab order: no tree role, as there is no arrow-key navigation.
+    <div className="flex flex-col gap-px">
       <Folder path="" depth={0} open={open} toggle={toggle} selected={selected} />
     </div>
   );
@@ -65,9 +66,9 @@ function Folder({ path, depth, open, toggle, selected }: FolderProps) {
   }
   if (!data.entries.length) return depth ? null : <Placeholder title="No files yet" />;
 
-  return data.entries.map((entry) =>
+  return sorted(data.entries).map((entry) =>
     entry.type === "dir" ? (
-      <div key={entry.path} role="group" className="flex flex-col gap-px">
+      <div key={entry.path} className="flex flex-col gap-px">
         <Row entry={entry} depth={depth} expanded={open.has(entry.path)} onToggle={() => toggle(entry.path)} />
         {open.has(entry.path) && <Folder {...{ open, toggle, selected }} path={entry.path} depth={depth + 1} />}
       </div>
@@ -76,6 +77,11 @@ function Folder({ path, depth, open, toggle, selected }: FolderProps) {
     ),
   );
 }
+
+const names = new Intl.Collator(undefined, { numeric: true });
+/** Folders first, then files, by name with numbers in order: topic-2 before topic-10. */
+const sorted = (entries: TreeEntry[]) =>
+  [...entries].sort((a, b) => (a.type === b.type ? names.compare(a.name, b.name) : a.type === "dir" ? -1 : 1));
 
 const indent = (depth: number) => 8 + depth * 14;
 
@@ -95,10 +101,16 @@ function Row({
   onToggle?: () => void;
   selected?: boolean;
 }) {
+  const ref = useRef<HTMLAnchorElement>(null);
+  // A file opened from a link or from elsewhere is scrolled into view.
+  useEffect(() => {
+    if (selected) ref.current?.scrollIntoView({ block: "nearest" });
+  }, [selected]);
+
   if (entry.type === "dir") {
     return (
       <Hint label={entry.summary} side="right">
-        <button type="button" role="treeitem" aria-expanded={expanded} onClick={onToggle} className={rowClass} style={{ paddingLeft: indent(depth) - 4 }}>
+        <button type="button" aria-expanded={expanded} onClick={onToggle} className={rowClass} style={{ paddingLeft: indent(depth) - 4 }}>
           <ChevronRightIcon className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform duration-150", expanded && "rotate-90")} />
           <span className="truncate">{entry.name}</span>
         </button>
@@ -109,9 +121,9 @@ function Row({
     <Hint label={entry.summary} side="right">
       <Link
         to="/files"
+        ref={ref}
         search={{ path: entry.path }}
-        role="treeitem"
-        aria-selected={selected}
+        aria-current={selected ? "page" : undefined}
         className={cn(rowClass, selected && "bg-accent font-medium text-foreground")}
         style={{ paddingLeft: indent(depth) + 14 }}
       >
