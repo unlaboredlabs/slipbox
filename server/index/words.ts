@@ -3,10 +3,23 @@
 
 const MAX_TERMS = 32;
 
-/** Lowercase word terms from a query, without punctuation or operators. */
+// Common English words that carry no meaning for search. Postgres drops these
+// itself; SQLite's FTS5 does not, so they are removed from every query.
+const STOP_WORDS = new Set(
+  ("a about above after again against all am an and any are as at be because been before being below between both " +
+    "but by can could did do does doing down during each few for from further had has have having he her here hers " +
+    "him his how i if in into is it its itself just me more most my no nor not now of off on once only or other our " +
+    "ours out over own same she should so some such than that the their theirs them then there these they this those " +
+    "through to too under until up very was we were what when where which while who whom why will with would you " +
+    "your yours").split(" "),
+);
+
+/** Lowercase word terms from a query, without punctuation, operators or stop words. */
 export function queryTerms(query: string): string[] {
-  const terms = query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
-  return [...new Set(terms)].slice(0, MAX_TERMS);
+  const words = query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  const terms = words.filter((w) => !STOP_WORDS.has(w));
+  // A query made only of stop words still searches for them.
+  return [...new Set(terms.length ? terms : words)].slice(0, MAX_TERMS);
 }
 
 /** SQLite FTS5 MATCH expression: each term quoted, so nothing in the query is read as syntax. */
