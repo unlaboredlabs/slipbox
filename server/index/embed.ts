@@ -60,6 +60,22 @@ export interface EmbedStatus {
   lastError: string | null;
 }
 
+/**
+ * A section counts as a meaning match only if its cosine similarity is at
+ * least `min`, and within `belowTop` of the best section for that query.
+ * Without this every section would come back as a "match", ranked.
+ *
+ * Measured with the default model (bge-small-en-v1.5) on the labelled set in
+ * server/test/fixtures/relevance.ts. Answering notes score 0.57 to 0.80, and a
+ * wordy real paraphrase as low as 0.52. Queries far from every note top out
+ * below 0.49, but short everyday questions reach 0.55 against the nearest
+ * note, so no floor separates everything: this one keeps every answer, and
+ * the margin leaves those near misses one to three hits, not the whole index.
+ * With another EMBED_MODEL, measure again: models differ in how high their
+ * similarities run.
+ */
+export const MEANING_FLOOR = { min: 0.5, belowTop: 0.1 };
+
 const BATCH = 16;
 const RETRY_MS = 30_000;
 
@@ -207,7 +223,7 @@ export class Embeddings {
 
   /**
    * Exact nearest sections by cosine similarity (vectors are unit length, so
-   * a dot product). Returns null when meaning search is unavailable.
+   * a dot product), above MEANING_FLOOR. Returns null when meaning search is unavailable.
    *
    * This is a linear scan over every permitted section, which stays fast to
    * about 100k sections. Past that, an exact index (or sharding the scan
@@ -229,11 +245,12 @@ export class Embeddings {
       if (!v || v.length !== q.length || !canRead(s.path)) continue;
       let dot = 0;
       for (let i = 0; i < q.length; i++) dot += q[i] * v[i];
-      if (dot <= 0) continue; // unrelated
+      if (dot < MEANING_FLOOR.min) continue;
       hits.push({ id, score: dot });
     }
     hits.sort((a, b) => b.score - a.score);
-    return hits.slice(0, limit);
+    const cut = (hits[0]?.score ?? 0) - MEANING_FLOOR.belowTop;
+    return hits.filter((h) => h.score >= cut).slice(0, limit);
   }
 }
 
