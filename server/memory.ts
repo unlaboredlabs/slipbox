@@ -93,8 +93,10 @@ export class Memory {
     const dir = target.endsWith(".md") ? target.slice(0, target.lastIndexOf("/") + 1) : target;
     const profiles: { path: string; content: string }[] = [];
     const parts = dir.split("/").filter(Boolean);
-    for (let i = 0; i <= parts.length; i++) {
-      const p = parts.slice(0, i).map((s) => s + "/").join("") + "profile.md";
+    const down = parts.map((_, i) => parts.slice(0, i + 1).join("/") + "/profile.md");
+    // shared/ is what every agent should know, so its profile comes on every path, after the root's.
+    const paths = ["profile.md", ...(parts[0] === "shared" ? [] : ["shared/profile.md"]), ...down];
+    for (const p of paths) {
       if (!canRead(caller, p)) continue;
       const content = await this.files.read(p);
       if (content !== null) profiles.push({ path: p, content });

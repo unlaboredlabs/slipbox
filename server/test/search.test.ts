@@ -137,6 +137,46 @@ describe(`search reliability (${backend})`, () => {
     expect(embedder.embedded).toEqual(["## B\n\nsecond part, revised"]);
   });
 
+  test("3. an edited section's old vector is freed from memory, unless another section still has that text", async () => {
+    const { memory } = await open(new WordsEmbedder());
+    const held = () => (memory.embeddings as any).vectors.size as number;
+    await memory.write(ada, "shared/a.md", "# A\n\nfirst part\n\n## B\n\nkept\n\n## Log\n", "create");
+    await memory.write(ada, "shared/b.md", "## B\n\nkept\n", "create"); // the same text as a.md's second section
+    await memory.embeddings.settle();
+    expect(held()).toBe(3);
+    for (let i = 0; i < 20; i++) {
+      await memory.edit(ada, "shared/a.md", "", `- entry ${i}\n`, "log");
+      await memory.embeddings.settle();
+    }
+    expect(held()).toBe(3);
+    await memory.edit(ada, "shared/a.md", "## B\n\nkept\n\n", "", "drop B");
+    await memory.embeddings.settle();
+    // b.md still has that text, so its vector stays.
+    expect(held()).toBe(3);
+    expect((await memory.search(ada, "kept")).results.find((r) => r.path === "shared/b.md")?.meaningRank).not.toBeNull();
+    await memory.delete(ada, "shared/b.md", "gone");
+    expect(held()).toBe(2);
+  });
+
+  test("3. a vector that lands after its section was edited is not kept", async () => {
+    const embedder = new WordsEmbedder();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const embed = embedder.embed.bind(embedder);
+    embedder.embed = async (texts, kind) => {
+      if (kind === "passage" && texts[0].includes("slow")) await gate;
+      return embed(texts, kind);
+    };
+    const { memory } = await open(embedder);
+    await memory.write(ada, "shared/a.md", "# A\n\nslow text\n", "create");
+    await Bun.sleep(20); // its embedding is now waiting
+    await memory.write(ada, "shared/a.md", "# A\n\nnew text\n", "edit", (await memory.read(ada, "shared/a.md")).version);
+    release();
+    await memory.embeddings.settle();
+    expect((memory.embeddings as any).vectors.size).toBe(1);
+    expect(memory.embeddings.status()).toMatchObject({ embedded: 1, total: 1, queued: 0 });
+  });
+
   test("4. writes never wait on the model, and the queue survives a restart", async () => {
     const stuck = new WordsEmbedder();
     stuck.hang = true; // the model never finishes loading
@@ -173,6 +213,8 @@ describe(`search reliability (${backend})`, () => {
       total: 1,
       queued: 1,
       lastError: expect.stringContaining("embedding shared/a.md#1 failed"),
+      // The floor was measured for the default model only.
+      warning: expect.stringContaining("measured for Xenova/bge-small-en-v1.5, not test/words"),
     });
   });
 
