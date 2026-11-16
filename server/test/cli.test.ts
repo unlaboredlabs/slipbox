@@ -90,6 +90,11 @@ describe(`cli (${backend})`, () => {
 
     expect((await cli("key", "revoke", "claude")).out).toContain("Revoked claude");
     expect((await cli("key", "list")).out).toContain("revoked");
+
+    // Names match ignoring case, as in create and the API.
+    expect((await cli("key", "create", "Bob", "--read", "/")).code).toBe(0);
+    expect((await cli("key", "revoke", "bob")).out).toContain("Revoked Bob");
+    expect((await cli("key", "list")).out).toMatch(/^Bob +revoked/m);
   });
 
   test("key create refuses an empty prefix, which would mean everything", async () => {
