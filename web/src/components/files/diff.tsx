@@ -37,12 +37,12 @@ export function DiffView({ diff }: { diff: string }) {
           {lines.map((line, i) =>
             line.kind === "gap" ? (
               <tr key={i}>
-                <td colSpan={4} className="py-1.5 pl-4 text-muted-foreground/50 select-none">⋯</td>
+                <td colSpan={4} className="py-1.5 pl-4 text-muted-foreground select-none">⋯</td>
               </tr>
             ) : (
               <tr key={i} className={cn(line.kind === "add" && "bg-added", line.kind === "del" && "bg-removed")}>
-                <td className="w-10 pr-2 pl-4 text-right align-top text-muted-foreground/50 select-none">{line.old ?? ""}</td>
-                <td className="w-10 pr-2 text-right align-top text-muted-foreground/50 select-none">{line.new ?? ""}</td>
+                <td className="w-10 pr-2 pl-4 text-right align-top text-muted-foreground select-none">{line.old ?? ""}</td>
+                <td className="w-10 pr-2 text-right align-top text-muted-foreground select-none">{line.new ?? ""}</td>
                 <td
                   className={cn(
                     "w-5 text-center align-top select-none",

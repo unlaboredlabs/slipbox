@@ -97,6 +97,12 @@ export abstract class Store {
     return row ? toDoc(row) : null;
   }
 
+  async docsByPath(paths: string[]): Promise<Doc[]> {
+    if (!paths.length) return [];
+    const rows = await this.sql.unsafe(`select * from docs where path in (${paths.map((_, i) => this.param(i)).join(", ")})`, paths);
+    return rows.map(toDoc);
+  }
+
   /** Every doc under a folder ("" for all). */
   async docsUnder(dir: string): Promise<Doc[]> {
     const rows = await this.sql`select * from docs where substr(path, 1, ${dir.length}) = ${dir} order by path`;
@@ -238,6 +244,11 @@ export abstract class Store {
     const [row] = await this.sql`insert into events (at, agent, action, path, query, ok)
       values (${at}, ${e.agent}, ${e.action}, ${e.path}, ${e.query}, ${e.ok ? 1 : 0}) returning id`;
     return { id: Number(row.id), at, ...e };
+  }
+
+  /** Keeps only the newest `keep` events. */
+  async pruneEvents(keep: number) {
+    await this.sql`delete from events where id <= (select coalesce(max(id), 0) from events) - ${keep}`;
   }
 
   /** Newest first; `after` returns only events with a larger id. */

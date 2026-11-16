@@ -131,3 +131,17 @@
 .row-in {
   animation: row-in 1.6s ease-out;
 }
+
+/* The lines a search result points at, when the note opens there. */
+@keyframes line-hit {
+  0%,
+  40% {
+    background-color: color-mix(in oklch, var(--link) 10%, transparent);
+    box-shadow: 0 0 0 6px color-mix(in oklch, var(--link) 10%, transparent);
+  }
+}
+.line-hit {
+  border-radius: 4px;
+  scroll-margin-top: 24px;
+  animation: line-hit 2.4s ease-out;
+}

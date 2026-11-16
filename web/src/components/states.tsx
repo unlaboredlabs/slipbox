@@ -1,6 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import { RotateCwIcon, TriangleAlertIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 /** A quiet centred message for empty and error states. */
@@ -24,11 +25,13 @@ export function Placeholder({
   );
 }
 
+/** An error, with Retry unless asking again can't help (a 4xx: not found, a bad path). */
 export function ErrorState({ error, onRetry, className }: { error: unknown; onRetry?: () => void; className?: string }) {
   const message = error instanceof Error ? error.message : "Something went wrong";
+  const final = error instanceof ApiError && error.status >= 400 && error.status < 500;
   return (
     <Placeholder icon={TriangleAlertIcon} title={message} className={className}>
-      {onRetry && (
+      {onRetry && !final && (
         <Button variant="outline" size="sm" onClick={onRetry}>
           <RotateCwIcon className="size-3.5" />
           Retry

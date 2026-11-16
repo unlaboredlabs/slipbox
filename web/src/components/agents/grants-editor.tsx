@@ -19,7 +19,10 @@ export function normalizePrefix(prefix: string) {
 
 export const newGrant = (): GrantDraft => ({ prefix: "", mode: "read", key: nextKey++ });
 
-/** The grants to send: blank rows dropped, one entry per prefix (write wins). */
+/**
+ * The grants to send: blank rows dropped, one entry per prefix (write wins), and none that a
+ * broader grant already gives ("shared/notes/ read" under "shared/ write").
+ */
 export function cleanGrants(drafts: GrantDraft[]): Grant[] {
   const byPrefix = new Map<string, Grant["mode"]>();
   for (const { prefix, mode } of drafts) {
@@ -27,7 +30,9 @@ export function cleanGrants(drafts: GrantDraft[]): Grant[] {
     const p = normalizePrefix(prefix);
     byPrefix.set(p, byPrefix.get(p) === "write" ? "write" : mode);
   }
-  return [...byPrefix].map(([prefix, mode]) => ({ prefix, mode }));
+  const covered = (prefix: string, mode: Grant["mode"]) =>
+    [...byPrefix].some(([other, otherMode]) => other !== prefix && prefix.startsWith(other) && (otherMode === "write" || mode === "read"));
+  return [...byPrefix].filter(([prefix, mode]) => !covered(prefix, mode)).map(([prefix, mode]) => ({ prefix, mode }));
 }
 
 export function GrantsEditor({ value, onChange }: { value: GrantDraft[]; onChange: (next: GrantDraft[]) => void }) {
@@ -60,10 +65,13 @@ export function GrantsEditor({ value, onChange }: { value: GrantDraft[]; onChang
           </Button>
         </div>
       ))}
-      <Button type="button" variant="ghost" size="sm" className="self-start px-2" onClick={() => onChange([...value, newGrant()])}>
-        <PlusIcon className="size-3.5" />
-        Add prefix
-      </Button>
+      <div className="flex items-center justify-between gap-3">
+        <Button type="button" variant="ghost" size="sm" className="px-2" onClick={() => onChange([...value, newGrant()])}>
+          <PlusIcon className="size-3.5" />
+          Add prefix
+        </Button>
+        {cleanGrants(value).length === 0 && <span className="text-[13px] text-muted-foreground">No grants: this key can read nothing</span>}
+      </div>
     </div>
   );
 }

@@ -42,6 +42,12 @@ export function formatTime(iso: string): string {
   return clock.format(new Date(iso));
 }
 
+const dayTime = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+/** "Nov 16, 6:04 PM". */
+export function formatDayTime(iso: string): string {
+  return dayTime.format(new Date(iso));
+}
+
 export function isToday(iso: string): boolean {
   return new Date(iso).toDateString() === new Date().toDateString();
 }

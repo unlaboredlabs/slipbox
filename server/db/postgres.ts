@@ -1,6 +1,6 @@
 import { SQL } from "bun";
 import type { Section } from "../index/sections";
-import { tsQuery } from "../index/words";
+import { tsPhrases, tsQuery, wordText } from "../index/words";
 import { type Doc, type Scope, type SectionRow, Store, toSection } from "./store";
 
 const INDEX_SCHEMA = `
@@ -94,9 +94,9 @@ export class PostgresStore extends Store {
     for (const s of sections) {
       const [row] = await tx`insert into sections (doc_path, heading, start_line, end_line, text, text_hash, tsv)
         values (${doc.path}, ${s.heading}, ${s.startLine}, ${s.endLine}, ${s.text}, ${s.textHash},
-          setweight(to_tsvector('english', ${doc.title}), 'A') ||
-          setweight(to_tsvector('english', ${s.heading}), 'B') ||
-          setweight(to_tsvector('english', ${s.text}), 'D'))
+          setweight(to_tsvector('english', ${wordText(doc.title)}), 'A') ||
+          setweight(to_tsvector('english', ${wordText(s.heading)}), 'B') ||
+          setweight(to_tsvector('english', ${wordText(s.text)}), 'D'))
         returning id`;
       ids.push(Number(row.id));
     }
@@ -109,12 +109,15 @@ export class PostgresStore extends Store {
 
   async wordSearch(terms: string[], scope: Scope, limit: number): Promise<SectionRow[]> {
     if (!terms.length) return [];
-    const where = this.scopeCondition("doc_path", scope, 1);
+    // ts_rank scores a phrase only by its words, so a section with a whole
+    // identifier from the query (stg_shop__orders) is ranked first explicitly.
+    const phrases = tsPhrases(terms);
+    const where = this.scopeCondition("doc_path", scope, phrases ? 2 : 1);
     const rows = await this.sql.unsafe(
       `select id, doc_path, heading, start_line, end_line, text, text_hash from sections, to_tsquery('english', $1) q
        where tsv @@ q and ${where.sql}
-       order by ts_rank(tsv, q, 1) desc, id limit ${Number(limit)}`,
-      [tsQuery(terms), ...where.params],
+       order by ${phrases ? "tsv @@ to_tsquery('english', $2) desc, " : ""}ts_rank(tsv, q, 1) desc, id limit ${Number(limit)}`,
+      [tsQuery(terms), ...(phrases ? [phrases] : []), ...where.params],
     );
     return rows.map(toSection);
   }

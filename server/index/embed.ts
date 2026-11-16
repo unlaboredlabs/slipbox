@@ -1,5 +1,5 @@
-// The meaning index: section embeddings from a local in-process model, kept
-// in memory, and searched exactly by brute-force cosine similarity.
+// The meaning index: section embeddings from a local model on its own thread,
+// kept in memory, and searched exactly by brute-force cosine similarity.
 //
 // Reliability rules (see DESIGN.md):
 // - Words never depend on this: every failure here is recorded and search
@@ -13,14 +13,124 @@ import { join } from "node:path";
 import type { Store } from "../db";
 import { prepareNativeRuntime } from "../native";
 
+/** The default model, the one MEANING_FLOOR is measured for. */
+export const DEFAULT_MODEL = "Xenova/bge-small-en-v1.5";
+/** Its revision on Hugging Face, pinned so a change upstream cannot change its vectors under the floor. */
+export const DEFAULT_REVISION = "ea104dacec62c0de699686887e3f920caeb4f3e3";
+
 export interface Embedder {
   readonly model: string;
   load(): Promise<void>;
   /** Unit-length vectors, one per text. */
   embed(texts: string[], kind: "query" | "passage"): Promise<Float32Array[]>;
+  /** Frees what load took (a thread, the model). */
+  close?(): void;
 }
 
-/** Runs a Hugging Face model in-process with @huggingface/transformers (onnxruntime). */
+/** The worker's module. server/build.ts points this at its copy inside the compiled program. */
+const WORKER_URL = new URL("./embed-worker.ts", import.meta.url).href;
+
+type Reply = { id: number; vectors?: Float32Array[]; error?: string };
+
+/**
+ * A LocalEmbedder on its own thread. A batch keeps the model busy for
+ * hundreds of milliseconds, and on the server's thread every request would
+ * wait for it. A worker that dies is started again on the next call.
+ */
+export class WorkerEmbedder implements Embedder {
+  private worker: Worker | null = null;
+  private loading: Promise<void> | null = null;
+  private calls = new Map<number, { resolve: (r: Reply) => void; reject: (err: Error) => void }>();
+  private next = 0;
+
+  constructor(
+    readonly model: string,
+    private cacheDir: string,
+    private url = WORKER_URL,
+  ) {}
+
+  load(): Promise<void> {
+    this.loading ??= this.start();
+    return this.loading;
+  }
+
+  async embed(texts: string[], kind: "query" | "passage"): Promise<Float32Array[]> {
+    await this.load();
+    return (await this.call({ op: "embed", texts, kind })).vectors!;
+  }
+
+  close() {
+    if (this.worker) this.stop(this.worker, new Error("the embedding model was closed"));
+  }
+
+  private async start() {
+    const w = new Worker(this.url);
+    this.worker = w;
+    w.unref(); // held only while a call waits (call), so the model never keeps the process alive
+    w.onmessage = ({ data }: MessageEvent<Reply>) => {
+      const c = this.calls.get(data.id);
+      this.calls.delete(data.id);
+      if (!this.calls.size) w.unref();
+      if (data.error === undefined) c?.resolve(data);
+      else c?.reject(new Error(data.error));
+    };
+    w.onerror = (e) => {
+      e.preventDefault();
+      this.stop(w, new Error(`the embedding worker failed: ${e.message}`));
+    };
+    w.addEventListener("close", () => this.stop(w, new Error("the embedding worker stopped")));
+    try {
+      await this.call({ op: "load", model: this.model, cacheDir: this.cacheDir });
+    } catch (err) {
+      this.stop(w, err as Error);
+      throw err;
+    }
+  }
+
+  private call(msg: Record<string, unknown>): Promise<Reply> {
+    const w = this.worker;
+    if (!w) return Promise.reject(new Error("the embedding worker stopped"));
+    const id = ++this.next;
+    return new Promise((resolve, reject) => {
+      this.calls.set(id, { resolve, reject });
+      w.ref();
+      w.postMessage({ id, ...msg });
+    });
+  }
+
+  /** Ends a worker and fails its calls; the next call starts a new one. */
+  private stop(w: Worker, err: Error) {
+    if (this.worker !== w) return;
+    this.worker = null;
+    this.loading = null;
+    w.terminate();
+    for (const c of this.calls.values()) c.reject(err);
+    this.calls.clear();
+  }
+}
+
+/** The worker side of WorkerEmbedder: answers its calls with the embedder `make` returns. */
+export function serveEmbedder(make: (model: string, cacheDir: string) => Embedder) {
+  const port = globalThis as unknown as Worker;
+  let embedder: Embedder | null = null;
+  port.onmessage = async ({ data }: MessageEvent) => {
+    try {
+      if (data.op === "load") {
+        embedder ??= make(data.model, data.cacheDir);
+        await embedder.load();
+        port.postMessage({ id: data.id });
+      } else {
+        if (!embedder) throw new Error("model not loaded");
+        const vectors = await embedder.embed(data.texts, data.kind);
+        port.postMessage({ id: data.id, vectors }, vectors.map((v) => v.buffer as ArrayBuffer));
+      }
+    } catch (err) {
+      port.postMessage({ id: data.id, error: message(err) });
+    }
+  };
+}
+
+/** Runs a Hugging Face model with @huggingface/transformers (onnxruntime), on the calling thread. */
 export class LocalEmbedder implements Embedder {
   private extractor: any = null;
 
@@ -34,7 +144,8 @@ export class LocalEmbedder implements Embedder {
     await prepareNativeRuntime(join(this.cacheDir, "runtime"));
     const { pipeline, env } = await import("@huggingface/transformers");
     env.cacheDir = this.cacheDir;
-    this.extractor = await pipeline("feature-extraction", this.model, { dtype: "fp32" });
+    const revision = this.model === DEFAULT_MODEL ? DEFAULT_REVISION : undefined;
+    this.extractor = await pipeline("feature-extraction", this.model, { dtype: "fp32", revision });
   }
 
   async embed(texts: string[]): Promise<Float32Array[]> {
@@ -58,6 +169,8 @@ export interface EmbedStatus {
   total: number;
   queued: number;
   lastError: string | null;
+  /** Set when another model than the default is used: the floor was not measured for it. */
+  warning: string | null;
 }
 
 /**
@@ -65,16 +178,17 @@ export interface EmbedStatus {
  * least `min`, and within `belowTop` of the best section for that query.
  * Without this every section would come back as a "match", ranked.
  *
- * Measured with the default model (bge-small-en-v1.5) on the labelled set in
- * server/test/fixtures/relevance.ts. Answering notes score 0.57 to 0.80, and a
- * wordy real paraphrase as low as 0.52. Queries far from every note top out
- * below 0.49, but short everyday questions reach 0.55 against the nearest
- * note, so no floor separates everything: this one keeps every answer, and
- * the margin leaves those near misses one to three hits, not the whole index.
- * With another EMBED_MODEL, measure again: models differ in how high their
- * similarities run.
+ * Measured with the default model (bge-small-en-v1.5) on the labelled sets in
+ * server/test/fixtures: short prose notes (relevance.ts) and notes the way
+ * coding agents write them, with code, identifiers and error strings
+ * (agent-notes.ts). Answering notes score 0.56 to 0.90; queries nothing
+ * answers top out at 0.48 to 0.59. No floor separates everything. At 0.56 no
+ * answer is lost that 0.50 kept, and queries nothing answers get zero to four
+ * meaning matches instead of up to 60. At 0.58 meaning-only paraphrases start
+ * to be lost. With another EMBED_MODEL, measure again: models differ in
+ * how high their similarities run.
  */
-export const MEANING_FLOOR = { min: 0.5, belowTop: 0.1 };
+export const MEANING_FLOOR = { min: 0.56, belowTop: 0.1 };
 
 const BATCH = 16;
 const RETRY_MS = 30_000;
@@ -114,19 +228,35 @@ export class Embeddings {
 
   /** Records a doc's new sections and queues any that need an embedding. */
   setDoc(path: string, sections: { id: number; textHash: string }[]) {
-    this.dropDoc(path, false);
+    const old = this.removeDoc(path);
     for (const s of sections) this.sections.set(s.id, { path, hash: s.textHash });
+    this.forget(old);
     this.kick();
   }
 
-  dropDoc(path: string, prune = true) {
-    for (const [id, s] of this.sections) if (s.path === path) this.sections.delete(id);
-    if (prune) this.pruneVectors();
+  dropDoc(path: string) {
+    this.forget(this.removeDoc(path));
   }
 
-  private pruneVectors() {
-    const live = new Set([...this.sections.values()].map((s) => s.hash));
-    for (const h of this.vectors.keys()) if (!live.has(h)) this.vectors.delete(h);
+  /** Removes a doc's sections, and returns their text hashes. */
+  private removeDoc(path: string): Set<string> {
+    const hashes = new Set<string>();
+    for (const [id, s] of this.sections) {
+      if (s.path !== path) continue;
+      hashes.add(s.hash);
+      this.sections.delete(id);
+    }
+    return hashes;
+  }
+
+  /** Frees the vectors of these hashes that no section uses any more. */
+  private forget(hashes: Set<string>) {
+    if (!hashes.size) return;
+    for (const s of this.sections.values()) hashes.delete(s.hash);
+    for (const h of hashes) {
+      this.vectors.delete(h);
+      this.failed.delete(h);
+    }
   }
 
   status(): EmbedStatus {
@@ -140,6 +270,10 @@ export class Embeddings {
       total,
       queued: this.embedder ? total - embedded : 0,
       lastError: this.lastError,
+      warning:
+        this.embedder && this.model !== DEFAULT_MODEL
+          ? `The meaning floor was measured for ${DEFAULT_MODEL}, not ${this.model}: meaning matches may be missed or noisy. Measure it again for this model (server/test/fixtures).`
+          : null,
     };
   }
 
@@ -169,9 +303,12 @@ export class Embeddings {
     while (this.running) await this.running;
   }
 
-  close() {
+  /** Stops the queue, lets a batch in flight finish (never waiting long on the model), then frees the model. */
+  async close() {
     this.closed = true;
     if (this.retry) clearTimeout(this.retry);
+    await Promise.race([this.settle(), Bun.sleep(2000)]);
+    this.embedder?.close?.();
   }
 
   private async work() {
@@ -200,10 +337,11 @@ export class Embeddings {
             }
           }
         }
-        // Sections are re-read from the database, so one edited meanwhile is simply queued again.
+        // Sections are re-read from the database, so one edited meanwhile is simply queued again,
+        // and the vector of text it no longer has is not kept.
         for (let i = 0; i < rows.length; i++) {
-          const { textHash } = rows[i];
-          if (!vectors[i].length) continue;
+          const { id, textHash } = rows[i];
+          if (!vectors[i].length || this.sections.get(id)?.hash !== textHash) continue;
           await this.store.putEmbedding(textHash, embedder.model, vectors[i]);
           this.vectors.set(textHash, vectors[i]);
         }

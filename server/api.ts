@@ -75,6 +75,9 @@ export function apiHandler(memory: Memory, adminToken: string) {
         if (body.revoked !== undefined && typeof body.revoked !== "boolean") {
           throw new UserError("bad_request", "revoked is true or false.");
         }
+        if (agent.revoked && body.revoked === false) {
+          throw new UserError("bad_request", "Revoking a key is final. Create a new key instead.");
+        }
         await store.updateAgent(agent.id, {
           grants: body.grants === undefined ? undefined : checkGrants(body.grants),
           revoked: body.revoked,
@@ -86,9 +89,8 @@ export function apiHandler(memory: Memory, adminToken: string) {
 
   return async (req: Request, server: Bun.Server<unknown>): Promise<Response> => {
     const url = new URL(req.url);
-    const bearer = /^Bearer\s+(.+)$/i.exec(req.headers.get("authorization") ?? "")?.[1]?.trim();
-    // EventSource cannot send headers, so the stream also takes the token as a query parameter.
-    const token = bearer ?? (url.pathname === "/api/events/stream" ? url.searchParams.get("token") : null);
+    // Only from the header: a token in a URL ends up in logs and shell history.
+    const token = /^Bearer\s+(.+)$/i.exec(req.headers.get("authorization") ?? "")?.[1]?.trim();
     if (!token || !adminToken || !sameSecret(token, adminToken)) {
       return error(new UserError("unauthorized", "Send the admin token: Authorization: Bearer <ADMIN_TOKEN>.", 401));
     }
@@ -172,7 +174,8 @@ export function error(err: unknown): Response {
   if (err instanceof UserError) {
     return Response.json({ error: { code: err.code, message: err.message } }, { status: err.status });
   }
-  console.error(err);
+  // The stack as text: an error object prints source excerpts into the log.
+  console.error(err instanceof Error ? err.stack : err);
   const message = err instanceof Error ? err.message : String(err);
   return Response.json({ error: { code: "internal", message } }, { status: 500 });
 }

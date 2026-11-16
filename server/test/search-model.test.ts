@@ -1,7 +1,8 @@
 // Meaning search with the real local model (downloaded once into MODELS_DIR).
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { Caller } from "../access";
-import { LocalEmbedder } from "../index/embed";
+import { DEFAULT_MODEL, LocalEmbedder } from "../index/embed";
+import { AGENT_NOTES, AGENT_QUERIES } from "./fixtures/agent-notes";
 import { NOTES, QUERIES } from "./fixtures/relevance";
 import { type Env, MODELS_DIR, backend, makeEnv, openMemory } from "./helpers";
 
@@ -13,7 +14,7 @@ describe(`search with the real model (${backend})`, () => {
 
   beforeAll(async () => {
     env = await makeEnv();
-    m = await openMemory(env, new LocalEmbedder("Xenova/bge-small-en-v1.5", MODELS_DIR));
+    m = await openMemory(env, new LocalEmbedder(DEFAULT_MODEL, MODELS_DIR));
     const notes: Record<string, string> = {
       "shared/pets.md": "# Office pets\n\nOur office dog is a golden retriever named Biscuit who loves playing fetch in the yard.\n",
       "shared/billing.md": "# Billing\n\nInvoices are sent through Stripe on the first business day of each month.\n",
@@ -61,7 +62,7 @@ describe(`meaning relevance with the real model (${backend})`, () => {
 
   beforeAll(async () => {
     env = await makeEnv();
-    m = await openMemory(env, new LocalEmbedder("Xenova/bge-small-en-v1.5", MODELS_DIR));
+    m = await openMemory(env, new LocalEmbedder(DEFAULT_MODEL, MODELS_DIR));
     for (const [path, text] of Object.entries(NOTES)) await m.memory.write(ada, path, text, "create");
     await m.memory.embeddings.settle();
   }, 300_000);
@@ -105,9 +106,47 @@ describe(`meaning relevance with the real model (${backend})`, () => {
         if (!found.length) unanswered++;
       }
     }
-    // Measured: 34 of the 274 non-answering query-note pairs pass (all did without the floor),
-    // and half the queries nothing answers get no meaning match at all.
-    expect(noise).toBeLessThanOrEqual(40);
-    expect(unanswered).toBeGreaterThanOrEqual(4);
+    // Measured: 16 of the 274 non-answering query-note pairs pass (all did without the floor),
+    // and none of the 8 queries nothing answers gets a meaning match.
+    expect(noise).toBeLessThanOrEqual(20);
+    expect(unanswered).toBeGreaterThanOrEqual(7);
+  });
+});
+
+describe(`relevance on notes the way agents write them, with the real model (${backend})`, () => {
+  let env: Env;
+  let m: Awaited<ReturnType<typeof openMemory>>;
+
+  beforeAll(async () => {
+    env = await makeEnv();
+    m = await openMemory(env, new LocalEmbedder(DEFAULT_MODEL, MODELS_DIR));
+    for (const [path, text] of Object.entries(AGENT_NOTES)) await m.memory.write(ada, path, text, "create");
+    await m.memory.embeddings.settle();
+  }, 300_000);
+
+  afterAll(async () => {
+    await m.close();
+    await env.cleanup();
+  });
+
+  test("every answering note is in the top 10, by words or meaning", async () => {
+    const missed: string[] = [];
+    for (const [query, answers] of AGENT_QUERIES) {
+      const paths = (await m.memory.search(ada, query)).results.map((r) => r.path);
+      for (const a of answers) if (!paths.includes(a)) missed.push(`${query} -> ${a}`);
+    }
+    expect(missed).toEqual([]);
+  });
+
+  test("queries nothing answers get few meaning matches, most of them none", async () => {
+    const counts: number[] = [];
+    for (const [query, answers] of AGENT_QUERIES) {
+      if (answers.length || !/^[\p{L} ]+$/u.test(query)) continue; // plain-language ones; SQL-looking text resembles the migration notes
+      counts.push((await m.memory.search(ada, query)).results.filter((r) => r.meaningRank !== null).length);
+    }
+    // Measured: 0, 0, 2, 0, 4, 1 of 125 sections (up to 38 before the floor was raised to 0.56).
+    expect(counts.length).toBe(6);
+    expect(Math.max(...counts)).toBeLessThanOrEqual(6);
+    expect(counts.filter((n) => n === 0).length).toBeGreaterThanOrEqual(3);
   });
 });

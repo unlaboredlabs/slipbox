@@ -1,5 +1,5 @@
 // The data folder's own git repository: one commit per write, authored by the agent.
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { NAME } from "./name";
 import { Locks, UserError } from "./files";
@@ -12,9 +12,24 @@ export interface Version {
   why: string;
 }
 
+/** One file's change in a folder's history. */
+export interface Change extends Version {
+  path: string;
+}
+
+const LOG_FORMAT = "--format=%x1e%H%x1f%aI%x1f%an%x1f%s";
+
 const HEX = /^[0-9a-f]{7,40}$/;
 /** Git's id for an empty tree, which every repository knows. */
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/** Kept in .git/info/exclude, so a whole-tree commit takes in notes only, not stray files. */
+const EXCLUDE = `# ${NAME}: only notes are kept in history
+*
+!*/
+!*.md
+.*
+`;
 
 export class Git {
   private locks = new Locks();
@@ -22,9 +37,11 @@ export class Git {
   constructor(private root: string) {}
 
   private async run(args: string[], opts: { env?: Record<string, string>; ok?: number[] } = {}) {
-    const proc = Bun.spawn(["git", "-c", "commit.gpgsign=false", "-c", "core.quotepath=off", ...args], {
+    // --no-optional-locks: status and diff must not take index.lock behind the git lock's back.
+    const proc = Bun.spawn(["git", "--no-optional-locks", "-c", "commit.gpgsign=false", "-c", "core.quotepath=off", ...args], {
       cwd: this.root,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", ...opts.env },
+      // LC_ALL=C: commit's "nothing to commit" is read from its output.
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", ...opts.env },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -34,12 +51,32 @@ export class Git {
       proc.exited,
     ]);
     if (!(opts.ok ?? [0]).includes(code)) throw new Error(`git ${args[0]} failed: ${err.trim() || out.trim()}`);
-    return { out, code };
+    return { out, err, code };
   }
 
+  /** Creates the repository, or makes an existing one usable after a crash. Call before any other git work. */
   async init() {
-    if (existsSync(join(this.root, ".git"))) return;
-    await this.run(["init", "-q", "-b", "main"]);
+    const git = join(this.root, ".git");
+    if (existsSync(git)) this.clearStaleLocks(git);
+    else await this.run(["init", "-q", "-b", "main"]);
+    const exclude = join(git, "info", "exclude");
+    mkdirSync(join(git, "info"), { recursive: true });
+    if (!existsSync(exclude) || !readFileSync(exclude, "utf8").includes(EXCLUDE)) appendFileSync(exclude, "\n" + EXCLUDE);
+  }
+
+  /**
+   * A git process killed mid-commit (a crash, an OOM kill, a power loss) leaves
+   * its lock files, and every later commit fails on them. At start no git of
+   * ours runs, so any left are stale.
+   */
+  private clearStaleLocks(git: string) {
+    const stale = readdirSync(git).filter((f) => f === "index.lock" || f === "HEAD.lock" || /^next-index-.*\.lock$/.test(f));
+    for (const f of stale) rmSync(join(git, f), { force: true });
+    const refs = join(git, "refs");
+    if (!existsSync(refs)) return;
+    for (const f of readdirSync(refs, { recursive: true, encoding: "utf8" })) {
+      if (f.endsWith(".lock")) rmSync(join(refs, f), { force: true });
+    }
   }
 
   private authorEnv(agent: string) {
@@ -57,34 +94,71 @@ export class Git {
     return this.locks.run("git", async () => {
       const scope = paths.length ? ["--", ...paths] : [];
       await this.run(["add", "-A", ...scope]);
-      const { code } = await this.run(["diff", "--cached", "--quiet", ...scope], { ok: [0, 1] });
-      if (code === 0) return null;
-      await this.run(["commit", "-q", "--no-verify", "-m", oneLine(why), ...scope], { env: this.authorEnv(agent) });
-      const { out } = await this.run(["rev-parse", "HEAD"]);
-      return out.trim();
+      // Two processes per write: core.abbrev=40 puts the whole commit id in commit's summary line, and
+      // commit itself says when there was nothing to commit.
+      const { out, err, code } = await this.run(["-c", "core.abbrev=40", "commit", "--no-verify", "-m", oneLine(why), ...scope], {
+        env: this.authorEnv(agent),
+        ok: [0, 1],
+      });
+      if (code === 1 && /^(nothing to commit|no changes added to commit|nothing added to commit)/m.test(out)) return null;
+      const id = /\b([0-9a-f]{40})\]/.exec(out)?.[1];
+      if (code !== 0 || !id) throw new Error(`git commit failed: ${err.trim() || out.trim()}`);
+      return id;
     });
   }
 
   /** True when the working tree has changes git has not committed. */
   async dirty(path?: string): Promise<boolean> {
-    const { out } = await this.run(["status", "--porcelain", "--untracked-files=all", ...(path ? ["--", path] : [])]);
-    return out.trim() !== "";
+    return (await this.changed(path)).length > 0;
+  }
+
+  /** Paths under `path` (a file or folder; all when empty) whose changes git has not committed. */
+  async changed(path?: string): Promise<string[]> {
+    return this.locks.run("git", async () => {
+      const scope = path ? ["--", path] : [];
+      const { out } = await this.run(["status", "--porcelain", "-z", "--no-renames", "--untracked-files=all", ...scope]);
+      return out.split("\0").filter(Boolean).map((entry) => entry.slice(3));
+    });
   }
 
   async history(path: string, limit = 20): Promise<Version[]> {
+    return (await this.log(path, limit)).filter((c) => c.path === path).map(({ path: _, ...v }) => v);
+  }
+
+  /** The latest commits under a folder ("" for all), newest first, with one entry per file each changed. */
+  async changes(dir: string, limit = 20): Promise<Change[]> {
+    return this.log(dir, limit);
+  }
+
+  private async log(path: string, limit: number): Promise<Change[]> {
     const { out } = await this.run(
-      ["log", `-n${limit}`, "--no-renames", "--raw", "--no-abbrev", "--format=%x1e%H%x1f%aI%x1f%an%x1f%s", "--", path],
+      ["log", `-n${limit}`, "--no-renames", "--raw", "--no-abbrev", LOG_FORMAT, ...(path ? ["--", path] : [])],
       { ok: [0, 128] }, // 128: no commits yet
     );
-    const versions: Version[] = [];
+    const changes: Change[] = [];
     for (const chunk of out.split("\x1e").slice(1)) {
       const [head, ...rest] = chunk.split("\n");
       const [commit, at, agent, why] = head.split("\x1f");
-      const raw = rest.find((l) => l.startsWith(":") && l.endsWith("\t" + path));
-      const blob = raw?.split(" ")[3] ?? null;
-      versions.push({ commit, at, agent, why, version: blob && !/^0+$/.test(blob) ? blob : null });
+      // :<old mode> <new mode> <old blob> <new blob> <status>\t<path>
+      for (const raw of rest) {
+        const tab = raw.indexOf("\t");
+        if (!raw.startsWith(":") || tab < 0) continue;
+        const blob = raw.slice(0, tab).split(" ")[3];
+        changes.push({ path: raw.slice(tab + 1), commit, at, agent, why, version: blob && !/^0+$/.test(blob) ? blob : null });
+      }
     }
-    return versions;
+    return changes;
+  }
+
+  /** Each file's last commit time, from one walk of the history. */
+  async lastChanges(): Promise<Map<string, string>> {
+    const { out } = await this.run(["log", "--no-renames", "--name-only", "--format=%x1e%aI"], { ok: [0, 128] });
+    const dates = new Map<string, string>();
+    for (const chunk of out.split("\x1e").slice(1)) {
+      const [at, ...paths] = chunk.split("\n");
+      for (const p of paths) if (p && !dates.has(p)) dates.set(p, new Date(at).toISOString());
+    }
+    return dates;
   }
 
   /** Reads an old version of a file, by blob id or commit id from its history. */

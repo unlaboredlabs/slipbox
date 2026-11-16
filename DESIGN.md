@@ -31,24 +31,26 @@ data/
 
 | Tool | What it does |
 |---|---|
-| `start(path?)` | What to load first: every `profile.md` from the root down to `path` that the key may read, plus the map of `path` (as `list`). |
-| `list(path)` | Folders and files under a path, each with its one-line summary, size and last change. |
-| `search(query, path?, limit?)` | Hybrid search. Returns matching sections: file, heading, line range, snippet, score, and which of words/meaning matched. |
+| `start(path?)` | What to load first: the agent's own name and folder (`agents/<name>/`), then the root `profile.md`, `shared/profile.md` and every `profile.md` down to `path` that the key may read (one that is not text is skipped), plus the map of `path` (as `list`). |
+| `list(path)` | Folders and files under a path, one line each: name, last change and one-line summary. At most 200, with a line saying how many more. |
+| `search(query, path?, limit?)` | Hybrid search. Returns the matching files, best first, each with its last change, its matching sections (line range, heading, and whether words, meaning or both matched) and the best section's snippet. `limit` counts sections. |
 | `read(path, lines?)` | A file or a line range, with its version (content hash). |
-| `write(path, content, why, baseVersion?)` | Create or replace. Replacing an existing file needs `baseVersion`; if it is stale, the write is refused and the current version and text come back. |
-| `edit(path, old, new, why)` | Exact text replacement (`old` must match exactly once), or append when `old` is empty. |
+| `write(path, content, why, baseVersion?)` | Create or replace. Replacing an existing file needs `baseVersion`. Without one, the write is refused with the version and the note's outline (title, summary, headings with line ranges); with a stale one, with the current version and text. |
+| `edit(path, old, new, why)` | Exact text replacement (`old` must match exactly once), or append to an existing file when `old` is empty. |
 | `delete(path, why)` | Remove a file. It stays in git history. |
-| `history(path, limit?)` | The file's versions: when, which agent, why. `read` accepts a `version` from here to read an old one. |
+| `history(path?, limit?)` | A file's versions: when, which agent, why. `read` accepts a `version` from here to read an old one. For a folder (the root when omitted), the latest changes to the notes under it that the key may read. |
 
 - Transport: MCP Streamable HTTP at `/mcp`, `Authorization: Bearer <key>`. Keys are stored hashed.
 - Writes to the same file are serialised in-process (one lock per path, one for git commits).
-- The server's MCP `instructions` tell agents the convention: call `start` first, search before writing, update an existing note rather than add a duplicate, keep the first paragraph a true summary, keep `profile.md` short and current, and correct a wrong fact in place (history keeps the old one).
+- Replies are compact text for agents, not JSON: one line per entry or version, dates as `YYYY-MM-DD`, versions as their first 12 characters (every tool accepts a prefix of 7 or more). Snippets keep the note's lines, so a piece can be pasted into `edit`. The dashboard's `/api` keeps the JSON below.
+- The server's MCP `instructions` tell agents the convention: call `start` first; notes go in `shared/`, `projects/<name>/` and `agents/<your name>/`; search before writing, update an existing note rather than add a duplicate, keep the first paragraph a true summary, keep `profile.md` short and current, correct a wrong fact in place (history keeps the old one), and when notes disagree the newer one usually wins.
+- "Last change" is the note's last commit; after a reindex or a lost database it is read back from git, not set to the time of indexing.
 
 ## Search: words + meaning, and how it stays reliable
 
 - Each file is split into sections at headings (long sections split further at paragraph boundaries, about 1500 characters).
 - Word index: SQLite FTS5 / Postgres `tsvector`, BM25 (Postgres has none built in, so it ranks with `ts_rank`, its nearest equivalent), title and heading weighted higher. Common English stop words are dropped from queries on both.
-- Meaning index: one embedding per section from a local model that runs in-process (default `Xenova/bge-small-en-v1.5` via `@huggingface/transformers`, 384 dims; `EMBED_MODEL` changes it). No external API, so no outage, key or network between an agent and its memory.
+- Meaning index: one embedding per section from a local model that runs on its own thread (a worker), so a batch never holds up requests (default `Xenova/bge-small-en-v1.5` via `@huggingface/transformers`, 384 dims; `EMBED_MODEL` changes it). No external API, so no outage, key or network between an agent and its memory.
 - A section is a meaning match only above a similarity floor and within a margin of the best match (one constant, measured for the default model on a labelled set of queries in the tests), so unrelated notes are not returned as matches.
 - The two result lists are merged with reciprocal rank fusion.
 
@@ -58,8 +60,10 @@ Reliability rules, each with a test:
 2. **Exact, not approximate.** Vector search is brute-force cosine over all permitted sections, held in memory as Float32 arrays. No ANN index, so no missed neighbours and nothing to tune. Fine to about 100k sections; a note in the code says where to add an index if that is ever passed.
 3. **Never stale.** An embedding is keyed by the hash of its section text plus the model name. A changed section gets a new one; a deleted section's is dropped; changing the model re-embeds everything. Search only uses embeddings whose hash matches the current section.
 4. **Writes never wait on the model.** A write commits the file and updates the word index synchronously, then queues the embedding. Until it lands, that section is found by words. The queue survives a restart because pending work is derived (sections without a matching embedding), not stored.
-5. **Visible.** `/api/health` and the dashboard show: model loaded or not, sections embedded / total, queue length, last error.
-6. **Rebuildable.** `bun run reindex` drops and rebuilds both indexes from the files.
+5. **Visible.** `/api/health` and the dashboard show: model loaded or not, sections embedded / total, queue length, last error, and a warning when `EMBED_MODEL` is not the default (the floor was measured for the default).
+6. **Rebuildable.** `slipbox reindex` drops and rebuilds both indexes from the files.
+
+The Intel Mac build (`darwin-x64`) has no embedding runtime, because onnxruntime no longer ships one for that platform; there, search uses words only.
 
 ## Dashboard (read-only, for watching)
 
@@ -72,26 +76,26 @@ TanStack Router + Query + Table, shadcn/ui, Vite; built to static files served b
 | Agents | Create a key (shown once), set its path prefixes, last seen, revoke. |
 | Search | Run a query and see exactly what an agent would get, with word/meaning scores, plus index health. |
 
-One admin login: `ADMIN_TOKEN` from the environment, sent as a bearer token.
+One admin login: `ADMIN_TOKEN` from the config, sent as a bearer token.
 
 ## HTTP API for the dashboard (`/api`, bearer `ADMIN_TOKEN`, JSON)
 
 ```
-GET    /api/health                      { ok, db, version, embed: { model, loaded, embedded, total, queued, lastError } }
+GET    /api/health                      { ok, db, version, embed: { model, loaded, embedded, total, queued, lastError, warning } }
 GET    /api/tree?path=                  { path, entries: [{ name, path, type: "dir"|"file", summary, bytes, updatedAt }] }
 GET    /api/file?path=&version=         { path, title, summary, content, version, bytes, updatedAt }
 GET    /api/history?path=&limit=        { versions: [{ version, commit, at, agent, why }] }
 GET    /api/diff?path=&from=&to=        { diff }            unified diff text between two commits; without from, the file as created
 POST   /api/restore   { path, commit }  { version }         writes the old content as a new commit by "admin"
-GET    /api/search?q=&path=&limit=      { meaning: "ok"|"unavailable", results: [{ path, heading, startLine, endLine, snippet, score, wordRank, meaningRank }] }
+GET    /api/search?q=&path=&limit=      { meaning: "ok"|"unavailable", results: [{ path, heading, startLine, endLine, snippet, updatedAt, score, wordRank, meaningRank }] }
 GET    /api/events?after=&limit=&agent= { events: [{ id, at, agent, action, path, query, ok }] }   newest first, only ids > after
-GET    /api/events/stream               server-sent events, one JSON event per message (also takes ?token=, as EventSource cannot send headers)
+GET    /api/events/stream               server-sent events, one JSON event per message (the token in the header only, never in the URL)
 GET    /api/agents                      { agents: [{ id, name, createdAt, lastSeenAt, revoked, grants: [{ prefix, mode: "read"|"write" }] }] }
 POST   /api/agents    { name, grants }  { agent, key }      key shown once
 PATCH  /api/agents/:id { grants?, revoked? }  { agent }
 ```
 
-Errors: `{ error: { code, message } }` with a fitting status. `db` is `"sqlite"` or `"postgres"`; `version` is the release number, or `"dev"`.
+Errors: `{ error: { code, message } }` with a fitting status. `db` is `"sqlite"` or `"postgres"`; `version` is the release number, or `"dev"`. Revoking a key is final: a revoked key cannot be turned back on, so create a new one. Agent names are compared ignoring case, and `admin` and `outside` are reserved: they mark the dashboard's restores and changes made outside.
 
 ## Storage
 
@@ -103,29 +107,39 @@ Plain SQL, no ORM, via Bun's built-in SQL client. SQLite is the default (`data.d
 - `embeddings` (text_hash, model, dims, vector blob)
 - `events` (id, at, agent, action, path, query, ok)
 
-Both backends sit behind one small interface; only the full-text query differs. Embeddings are plain blobs in both (no pgvector needed).
+Both backends sit behind one small interface; only the full-text query differs. Embeddings are plain blobs in both (no pgvector needed). Agent keys and the activity log exist only here, so deleting the database rebuilds the index but loses the keys and the log.
 
 ## Layout
 
 ```
 server/   Bun + TypeScript
   cli.ts      the command line
+  config.ts   the config file and environment overrides
+  name.ts     the program's name and home
   index.ts    serve /mcp, /api, static
   memory.ts   the operations the tools and the API share
   mcp.ts      the tools
   api.ts      dashboard API
+  web.ts      serves the dashboard's files (embedded, or web/dist from source)
+  access.ts   agent keys and path grants
+  events.ts   the activity log, stored and pushed live
   files.ts    read/write, size cap, path rules, locks
   git.ts      commit, history, diff, restore
-  index/      sections.ts, words.ts, embed.ts, search.ts
+  index/      sections.ts, words.ts, embed.ts (+ embed-worker.ts, the model's thread), search.ts
   db/         store.ts (the interface), sqlite.ts, postgres.ts (each with its schema)
   service.ts  systemd / launchd
+  update.ts   `slipbox update`
+  version.ts  the version, stamped by build.ts
+  native.ts   the embedding runtime's native files, embedded by build.ts
   build.ts    the single compiled program
+  smoke.ts    smoke test of a compiled program (CI)
+  e2e.ts      end-to-end check against a running server with a real MCP client
   test/
 web/      Vite, TanStack, shadcn
 data/     the Markdown files (its own git repo, git-ignored by this one)
 ```
 
-Config: `DATA_DIR`, `DATABASE_URL`, `ADMIN_TOKEN`, `HOST` (default `127.0.0.1`), `PORT` (default 7323), `MAX_FILE_BYTES`, `EMBED_MODEL` (`off` disables meaning search), `CONFIG_FILE` (where the config file is), `SERVICE_NAME` (the service's name, to run a second instance).
+Config (in the config file; in the environment with a `SLIPBOX_` prefix): `DATA_DIR`, `DATABASE_URL`, `ADMIN_TOKEN`, `HOST` (default `127.0.0.1`), `PORT` (default 7323), `MAX_FILE_BYTES`, `EMBED_MODEL` (`off` disables meaning search), `SERVICE_NAME` (the service's name, to run a second instance). `SLIPBOX_CONFIG_FILE` says where the config file is.
 
 ## Install and CLI
 
@@ -138,13 +152,15 @@ slipbox service start | stop | status | logs
 slipbox service uninstall     # removes the service; data and config stay
 ```
 
-- The command is one self-contained program with the dashboard built in (`bun build --compile`, dashboard files embedded). If the embedding model's native runtime cannot be bundled dependably, the fallback is an installer that fetches Bun and the package; either way the person types one line.
+- The command is one self-contained program (`bun build --compile`) with the dashboard's files and the embedding runtime's native files (onnxruntime) embedded. The runtime is written next to the model on first start, as it must load from disk.
 - `service` uses what the OS has: a systemd user unit on Linux, a launchd agent on macOS. No root, no Docker.
 - Other commands: `serve` (run in the foreground), `key create <name> --read <prefix> --write <prefix>` / `key list` / `key revoke <name>`, `reindex`, `status` (URL, data folder, index health), `update` (the same download as the installer, then restarts the service if installed), `version`.
-- First run needs no configuration: it creates the data folder (`~/.local/share/slipbox`, with the notes in `data/`, `data.db` and the model beside it), a config file (`~/.config/slipbox/config.env`) with a generated admin token, and prints the dashboard URL and the line to connect an agent. Environment variables override the config file.
-- The embedding model downloads once on first start into the data folder; until it has, search answers by words.
+- First run needs no configuration: it creates the data folder (`~/.local/share/slipbox`, with the notes in `data/`, `data.db` and the model beside it), a config file (`~/.config/slipbox/config.env`) with a generated admin token, and prints the dashboard URL and the line to connect an agent. Environment variables override the config file only under `SLIPBOX_` names (`SLIPBOX_PORT`), so a plain `DATABASE_URL` meant for another app is never used; the service reads only its config file.
+- The embedding model downloads once on first start from huggingface.co into `models/` beside the data folder; until it has, search answers by words. Apart from that and `update`, the program makes no network calls.
 - The install script detects OS and CPU, downloads the matching release from GitHub, checks its checksum, and never needs sudo.
-- Releases: one rolling prerelease tagged `edge`, rebuilt on every push to main that passes CI, for Linux and macOS on x64 and arm64 (`slipbox-<os>-<arch>`, plus `checksums.txt` and a `version` file). The version is one integer, the number of commits on main; `slipbox version` prints `slipbox 42 (abc1234, 2026-11-16)`, a local build prints `slipbox dev`.
+- Releases: one rolling prerelease tagged `edge`, rebuilt on every push to main that passes CI, for Linux and macOS on x64 and arm64 (`slipbox-<os>-<arch>`, plus `checksums.txt`, a `version` file and `THIRD_PARTY_LICENSES`). The version is one integer, the number of commits on main; `slipbox version` prints `slipbox 42 (abc1234, 2026-11-16)` with the commit's date, a local build prints `slipbox dev`.
+- Publishing (`.github/workflows/release.yml`): each platform is built and smoke-tested on its own native runner by the same `build.yml` CI uses. The publish job skips a commit that is no longer main's tip, attests build provenance for the binaries, uploads every asset under a temporary name, then renames each over the live one (binaries, checksums, version last). A failed upload leaves the old release whole; the switch takes about a second, and `install.sh` and `update` retry through it.
+- The Bun version is pinned once, in `.bun-version`, which both workflows read.
 
 ## Left out on purpose
 

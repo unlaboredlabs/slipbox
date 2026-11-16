@@ -4,9 +4,11 @@
 // - Builds web/ first when it exists, and embeds web/dist.
 // - Embeds the embedding runtime's native files (onnxruntime) for the target,
 //   which server/native.ts writes to disk on first use.
+// - Bundles the embedding model's worker (server/index/embed-worker.ts) as a
+//   second entrypoint, which the program starts from inside itself.
 // - Stubs `sharp`, an image library @huggingface/transformers imports but text
 //   embeddings never use.
-// - --release stamps the version: the number of commits on main, the commit and the date.
+// - --release stamps the version: the number of commits on main, the commit and its date.
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -38,7 +40,9 @@ async function run(cmd: string[], cwd = root): Promise<string> {
 const web = join(root, "web");
 if (!args["skip-web"] && existsSync(join(web, "package.json"))) {
   console.log("building web/ ...");
-  await run(["bun", "install", "--frozen-lockfile"], web).catch(() => run(["bun", "install"], web));
+  // A release ships exactly what web/bun.lock pins; a dev build may resolve afresh.
+  const install = run(["bun", "install", "--frozen-lockfile"], web);
+  await (args.release ? install : install.catch(() => run(["bun", "install"], web)));
   await run(["bun", "run", "build"], web);
 }
 const dist = join(web, "dist");
@@ -67,7 +71,7 @@ if (args.release) {
   version = {
     VERSION: await run(["git", "rev-list", "--count", "HEAD"]),
     COMMIT: await run(["git", "rev-parse", "--short=7", "HEAD"]),
-    BUILD_DATE: new Date().toISOString().slice(0, 10),
+    BUILD_DATE: await run(["git", "show", "-s", "--format=%cs", "HEAD"]), // the commit's date, so every platform agrees
   };
 }
 
@@ -113,6 +117,14 @@ const plugin: BunPlugin = {
       return { contents: src, loader: "ts" };
     });
 
+    // The embedding model's thread: its module inside the program, an entrypoint below.
+    build.onLoad({ filter: /server[\\/]index[\\/]embed\.ts$/ }, async ({ path }) => {
+      const from = 'const WORKER_URL = new URL("./embed-worker.ts", import.meta.url).href;';
+      const src = await Bun.file(path).text();
+      if (!src.includes(from)) throw new Error("server/index/embed.ts changed how it finds its worker; update server/build.ts");
+      return { contents: src.replace(from, 'const WORKER_URL = "./index/embed-worker.ts";'), loader: "ts" };
+    });
+
     build.onLoad({ filter: /server[\\/]web\.ts$/ }, async ({ path }) => {
       const files = webFiles.map((p) => ({ name: "/" + relative(dist, p).split("\\").join("/"), path: p }));
       const map = files.map((f, i) => `${JSON.stringify(f.name)}: f${i}`).join(", ");
@@ -134,7 +146,7 @@ const plugin: BunPlugin = {
 };
 
 const result = await Bun.build({
-  entrypoints: [join(root, "server/cli.ts")],
+  entrypoints: [join(root, "server/cli.ts"), join(root, "server/index/embed-worker.ts")],
   compile: { target: target as any, outfile },
   minify: true,
   plugins: [plugin],
