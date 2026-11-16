@@ -89,25 +89,25 @@ Agents get eight tools: `start`, `list`, `search`, `read`, `write`, `edit`, `del
 ```
 
 - A note's title is its first `# heading`, and its summary is the first paragraph under it.
-- `profile.md` in any folder holds the short, always-current facts for that folder. `start` returns every profile from the root down to where the agent works.
+- `profile.md` in any folder holds the short, always-current facts for that folder. `start` tells the agent its name and own folder, and returns the root profile, `shared/profile.md` and every profile down to where the agent works.
 - Notes are capped at 32 KB (profiles at 4 KB), so agents split big topics instead of growing one file forever.
 - Replacing a note needs the version the agent read; if someone changed it since, the write is refused and the current text comes back to merge.
 - Changes made outside slipbox (a `git pull`, a manual fix) are picked up on start and while it runs.
 
-The notes can always be rebuilt into a new index from the files (on the next start, or with `slipbox reindex`). The agent keys live only in the database, though: delete it and every key must be created again.
+The notes can always be rebuilt into a new index from the files (on the next start, or with `slipbox reindex`). Agent keys and the activity log live only in `data.db`, though: deleting it rebuilds the search index from the files, but every agent key must be created again.
 
 ## How search works
 
 Each note is split into sections at its headings. A search runs two ways at once:
 
 - **Words**: a full-text index (SQLite FTS5, or Postgres `tsvector`) that ranks sections by how well they match, with titles and headings counting more.
-- **Meaning**: each section has an embedding from a local model (`Xenova/bge-small-en-v1.5` by default). The query is compared with every section the key may read, and a section counts as a match only if it is close enough: above a fixed similarity floor, and near the best match. A query that nothing answers gets no meaning matches rather than the least bad ones.
+- **Meaning**: each section has an embedding from a local model (`Xenova/bge-small-en-v1.5` by default), which runs on its own thread so it never holds up the agents. The query is compared with every section the key may read, and a section counts as a match only if it is close enough: above a fixed similarity floor, and near the best match. A query that nothing answers gets no meaning matches rather than the least bad ones.
 
-The two ranked lists are merged with reciprocal rank fusion, and each result says whether words, meaning or both matched.
+The two ranked lists are merged with reciprocal rank fusion. Agents get one entry per matching note, with its last change, the line ranges that matched (and whether by words, meaning or both) and a snippet that keeps the note's lines.
 
 What it guarantees:
 
-1. **Words never depend on the model.** If the model is missing, still downloading or fails, search answers from the word index and says `meaning: unavailable`.
+1. **Words never depend on the model.** If the model is missing, still downloading or fails, search answers from the word index and says meaning search is unavailable.
 2. **Exact, not approximate.** Meaning search compares the query with every permitted section, so no close match is missed.
 3. **Never stale.** An embedding is tied to the exact text of its section and the model's name. An edited section is found by words until its new embedding is ready; an old one is never used.
 4. **Writes never wait on the model.** A write is committed and searchable by words at once; its embedding follows in the background, and pending work resumes after a restart.
@@ -155,7 +155,7 @@ slipbox speaks plain HTTP, so agent keys and the admin token cross the network u
 
 ## Backup and moving machines
 
-Everything lives in two places: `~/.local/share/slipbox` (notes, database, model) and `~/.config/slipbox/config.env` (the admin token). The notes alone are not enough: the agent keys exist only in `data.db`.
+Everything lives in two places: `~/.local/share/slipbox` (notes, database, model) and `~/.config/slipbox/config.env` (the admin token). The notes alone are not enough: the agent keys and activity log exist only in `data.db`.
 
 To back up or move, stop the service first, because a SQLite file copied while it is being written can be inconsistent:
 
@@ -173,7 +173,7 @@ For a backup without stopping: `sqlite3 ~/.local/share/slipbox/data.db ".backup 
 
 - **The service does not start.** `slipbox service logs` shows why. A port in use says so there; set another `PORT` in the config file.
 - **It stops when you log out (Linux).** Run `loginctl enable-linger $USER` once.
-- **Search says `meaning: unavailable`.** The model is still downloading, or huggingface.co could not be reached. `slipbox status` shows the model's state and last error; word search works meanwhile. Intel Macs always search by words only.
+- **Search says meaning search is unavailable.** The model is still downloading, or huggingface.co could not be reached. `slipbox status` shows the model's state and last error; word search works meanwhile. Intel Macs always search by words only.
 - **An agent gets 401.** The key is wrong or revoked; `slipbox key list` shows which keys exist.
 
 ## Uninstall

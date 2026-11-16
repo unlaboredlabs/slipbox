@@ -1,5 +1,5 @@
-// The meaning index: section embeddings from a local in-process model, kept
-// in memory, and searched exactly by brute-force cosine similarity.
+// The meaning index: section embeddings from a local model on its own thread,
+// kept in memory, and searched exactly by brute-force cosine similarity.
 //
 // Reliability rules (see DESIGN.md):
 // - Words never depend on this: every failure here is recorded and search
@@ -23,9 +23,114 @@ export interface Embedder {
   load(): Promise<void>;
   /** Unit-length vectors, one per text. */
   embed(texts: string[], kind: "query" | "passage"): Promise<Float32Array[]>;
+  /** Frees what load took (a thread, the model). */
+  close?(): void;
 }
 
-/** Runs a Hugging Face model in-process with @huggingface/transformers (onnxruntime). */
+/** The worker's module. server/build.ts points this at its copy inside the compiled program. */
+const WORKER_URL = new URL("./embed-worker.ts", import.meta.url).href;
+
+type Reply = { id: number; vectors?: Float32Array[]; error?: string };
+
+/**
+ * A LocalEmbedder on its own thread. A batch keeps the model busy for
+ * hundreds of milliseconds, and on the server's thread every request would
+ * wait for it. A worker that dies is started again on the next call.
+ */
+export class WorkerEmbedder implements Embedder {
+  private worker: Worker | null = null;
+  private loading: Promise<void> | null = null;
+  private calls = new Map<number, { resolve: (r: Reply) => void; reject: (err: Error) => void }>();
+  private next = 0;
+
+  constructor(
+    readonly model: string,
+    private cacheDir: string,
+    private url = WORKER_URL,
+  ) {}
+
+  load(): Promise<void> {
+    this.loading ??= this.start();
+    return this.loading;
+  }
+
+  async embed(texts: string[], kind: "query" | "passage"): Promise<Float32Array[]> {
+    await this.load();
+    return (await this.call({ op: "embed", texts, kind })).vectors!;
+  }
+
+  close() {
+    if (this.worker) this.stop(this.worker, new Error("the embedding model was closed"));
+  }
+
+  private async start() {
+    const w = new Worker(this.url);
+    this.worker = w;
+    w.unref(); // held only while a call waits (call), so the model never keeps the process alive
+    w.onmessage = ({ data }: MessageEvent<Reply>) => {
+      const c = this.calls.get(data.id);
+      this.calls.delete(data.id);
+      if (!this.calls.size) w.unref();
+      if (data.error === undefined) c?.resolve(data);
+      else c?.reject(new Error(data.error));
+    };
+    w.onerror = (e) => {
+      e.preventDefault();
+      this.stop(w, new Error(`the embedding worker failed: ${e.message}`));
+    };
+    w.addEventListener("close", () => this.stop(w, new Error("the embedding worker stopped")));
+    try {
+      await this.call({ op: "load", model: this.model, cacheDir: this.cacheDir });
+    } catch (err) {
+      this.stop(w, err as Error);
+      throw err;
+    }
+  }
+
+  private call(msg: Record<string, unknown>): Promise<Reply> {
+    const w = this.worker;
+    if (!w) return Promise.reject(new Error("the embedding worker stopped"));
+    const id = ++this.next;
+    return new Promise((resolve, reject) => {
+      this.calls.set(id, { resolve, reject });
+      w.ref();
+      w.postMessage({ id, ...msg });
+    });
+  }
+
+  /** Ends a worker and fails its calls; the next call starts a new one. */
+  private stop(w: Worker, err: Error) {
+    if (this.worker !== w) return;
+    this.worker = null;
+    this.loading = null;
+    w.terminate();
+    for (const c of this.calls.values()) c.reject(err);
+    this.calls.clear();
+  }
+}
+
+/** The worker side of WorkerEmbedder: answers its calls with the embedder `make` returns. */
+export function serveEmbedder(make: (model: string, cacheDir: string) => Embedder) {
+  const port = globalThis as unknown as Worker;
+  let embedder: Embedder | null = null;
+  port.onmessage = async ({ data }: MessageEvent) => {
+    try {
+      if (data.op === "load") {
+        embedder ??= make(data.model, data.cacheDir);
+        await embedder.load();
+        port.postMessage({ id: data.id });
+      } else {
+        if (!embedder) throw new Error("model not loaded");
+        const vectors = await embedder.embed(data.texts, data.kind);
+        port.postMessage({ id: data.id, vectors }, vectors.map((v) => v.buffer as ArrayBuffer));
+      }
+    } catch (err) {
+      port.postMessage({ id: data.id, error: message(err) });
+    }
+  };
+}
+
+/** Runs a Hugging Face model with @huggingface/transformers (onnxruntime), on the calling thread. */
 export class LocalEmbedder implements Embedder {
   private extractor: any = null;
 
@@ -198,9 +303,12 @@ export class Embeddings {
     while (this.running) await this.running;
   }
 
-  close() {
+  /** Stops the queue, lets a batch in flight finish (never waiting long on the model), then frees the model. */
+  async close() {
     this.closed = true;
     if (this.retry) clearTimeout(this.retry);
+    await Promise.race([this.settle(), Bun.sleep(2000)]);
+    this.embedder?.close?.();
   }
 
   private async work() {

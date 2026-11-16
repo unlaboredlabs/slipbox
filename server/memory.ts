@@ -5,7 +5,7 @@ import { type Caller, canRead, canSeeDir, readScope, requireRead, requireWrite }
 import type { Store } from "./db";
 import { EventLog } from "./events";
 import { Files, Locks, UserError, byteLength, dirPath, filePath, versionOf } from "./files";
-import { Git, oneLine } from "./git";
+import { type Change, Git, oneLine } from "./git";
 import { type Embedder, Embeddings } from "./index/embed";
 import { parseMarkdown } from "./index/sections";
 import { hybridSearch } from "./index/search";
@@ -81,9 +81,7 @@ export class Memory {
     if (this.pruner) clearInterval(this.pruner);
     // Let writes in flight commit, so none is left on disk for the next start to call "outside".
     await this.locks.drain(10_000);
-    this.embeddings.close();
-    // Let a batch in flight finish, but never wait long on the model.
-    await Promise.race([this.embeddings.settle(), Bun.sleep(2000)]);
+    await this.embeddings.close();
   }
 
   // Reading
@@ -98,7 +96,8 @@ export class Memory {
     const paths = ["profile.md", ...(parts[0] === "shared" ? [] : ["shared/profile.md"]), ...down];
     for (const p of paths) {
       if (!canRead(caller, p)) continue;
-      const content = await this.files.read(p);
+      // A profile that is not text is skipped, so it cannot make start fail.
+      const content = await this.files.read(p).catch((err) => (err instanceof UserError && err.code === "not_text" ? null : Promise.reject(err)));
       if (content !== null) profiles.push({ path: p, content });
     }
     return { profiles, map: await this.list(caller, dir) };
@@ -185,6 +184,15 @@ export class Memory {
     return { versions };
   }
 
+  /** The latest changes to the notes under a folder, newest first: what changed since an agent last looked. */
+  async changes(caller: Caller, path: string | undefined, limit = 20): Promise<{ path: string; changes: Change[] }> {
+    const dir = dirPath(path);
+    if (!canSeeDir(caller, dir)) throw new UserError("forbidden", `This key may not read ${dir}.`, 403);
+    limit = Math.min(Math.max(limit, 1), 1000);
+    const changes = (await this.git.changes(dir, limit)).filter((c) => isNotePath(c.path) && canRead(caller, c.path));
+    return { path: dir, changes: changes.slice(0, limit) };
+  }
+
   async diff(caller: Caller, path: string, from: string | undefined, to: string) {
     path = filePath(path);
     requireRead(caller, path);
@@ -206,12 +214,19 @@ export class Memory {
       const current = await this.files.read(path);
       if (current !== null) {
         const version = versionOf(current);
-        if (!baseVersion || !sameVersion(baseVersion, version)) {
+        if (!baseVersion) {
+          // Not the whole note: the caller may not need it, and it can be long. Its outline says what to read.
+          throw new UserError(
+            "exists",
+            `${path} already exists. Change it with edit, or read the lines you need and write again with baseVersion ${version.slice(0, 12)}.`,
+            409,
+            { version, outline: outline(current) },
+          );
+        }
+        if (!sameVersion(baseVersion, version)) {
           throw new UserError(
             "stale",
-            baseVersion
-              ? `${path} has changed since version ${baseVersion}. Here is the current text; merge your change into it and write again with baseVersion ${version}.`
-              : `${path} already exists. Read it, merge your change, and write again with baseVersion ${version} (or use edit).`,
+            `${path} has changed since version ${baseVersion}. Its current text is below; merge your change into it and write again with baseVersion ${version.slice(0, 12)}.`,
             409,
             { version, content: current },
           );
@@ -237,8 +252,10 @@ export class Memory {
       const current = await this.files.read(path);
       let next: string;
       if (oldText === "") {
-        const base = current ?? "";
-        next = base + (base === "" || base.endsWith("\n") ? "" : "\n") + newText;
+        if (current === null) {
+          throw new UserError("not_found", `${path} does not exist. Create it with write, starting with a "# Title" and a one-line summary.`, 404);
+        }
+        next = current + (current === "" || current.endsWith("\n") ? "" : "\n") + newText;
       } else {
         if (current === null) throw new UserError("not_found", `${path} does not exist.`, 404);
         const count = current.split(oldText).length - 1;
@@ -307,7 +324,8 @@ export class Memory {
 
   // Indexing
 
-  private async indexFile(path: string, content: string | null, hash = content === null ? "" : versionOf(content)) {
+  /** Indexes a file; `updatedAt` is when it last changed, now unless given. */
+  private async indexFile(path: string, content: string | null, hash = content === null ? "" : versionOf(content), updatedAt?: string) {
     if (content === null) {
       await this.store.deleteDoc(path);
       this.embeddings.dropDoc(path);
@@ -320,7 +338,7 @@ export class Memory {
       summary,
       hash,
       bytes: byteLength(content),
-      updatedAt: new Date().toISOString(),
+      updatedAt: updatedAt ?? new Date().toISOString(),
     };
     const { ids } = await this.store.putDoc(doc, sections);
     this.embeddings.setDoc(path, ids.map((id, i) => ({ id, textHash: sections[i].textHash })));
@@ -333,7 +351,15 @@ export class Memory {
    */
   private async reconcileAll() {
     const paths = new Set([...this.files.allFiles(), ...(await this.store.docHashes()).keys()]);
-    for (const path of paths) await this.syncPath(path).catch((err) => console.error(`could not index ${path}:`, err));
+    // What gets indexed now (after a reindex, a lost database, a new machine) keeps the time it last
+    // changed: its last commit, unless it has changed since. Read once, and only if needed.
+    let dates: Promise<Map<string, string>> | null = null;
+    const changedAt = (path: string) =>
+      (dates ??= Promise.all([this.git.lastChanges(), this.git.changed()]).then(([last, dirty]) => {
+        for (const p of dirty) last.delete(p);
+        return last;
+      })).then((d) => d.get(path));
+    for (const path of paths) await this.syncPath(path, changedAt).catch((err) => console.error(`could not index ${path}:`, err));
     if (await this.git.dirty()) await this.git.commit([], OUTSIDE, `Changes made outside ${NAME}`);
   }
 
@@ -367,7 +393,7 @@ export class Memory {
    * has just written itself is left alone. A file that is not UTF-8 is indexed
    * as empty.
    */
-  private async syncPath(path: string) {
+  private async syncPath(path: string, changedAt?: (path: string) => Promise<string | undefined>) {
     await this.locks.run(path, async () => {
       let content: string | null;
       let hash: string | undefined;
@@ -380,7 +406,9 @@ export class Memory {
       }
       hash ??= content === null ? undefined : versionOf(content);
       const known = await this.store.getDoc(path);
-      if (hash === undefined ? known !== null : known?.hash !== hash) await this.indexFile(path, content, hash);
+      if (hash === undefined ? known !== null : known?.hash !== hash) {
+        await this.indexFile(path, content, hash, content === null ? undefined : await changedAt?.(path));
+      }
     });
   }
 
@@ -414,6 +442,14 @@ export class Memory {
       }, 200),
     );
   }
+}
+
+/** A note's title, summary and headings with their line ranges: enough to choose what to read. */
+function outline(content: string): string {
+  const { title, summary, sections } = parseMarkdown(content);
+  const lines = content.split("\n").length - (content.endsWith("\n") ? 1 : 0);
+  const head = [`# ${title || "(no title)"}`, summary, `${lines} lines:`].filter(Boolean);
+  return [...head, ...sections.map((s) => `${s.startLine}-${s.endLine} ${s.heading}`.trimEnd())].join("\n");
 }
 
 function checkWhy(why: unknown) {

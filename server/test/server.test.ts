@@ -88,16 +88,24 @@ describe(`server (${backend})`, () => {
       arguments: { path: "shared/stack.md", content: "# Stack\n\nWe deploy with Kamal.\n", why: "record the deploy tool" },
     });
     expect(r.isError).toBeFalsy();
-    const first = JSON.parse(text(r));
-    expect(first.commit).toMatch(/^[0-9a-f]{40}$/);
+    const first = /^Saved shared\/stack\.md, version ([0-9a-f]{12})\.$/.exec(text(r))?.[1];
+    expect(first).toBeTruthy();
 
     r = await writer.callTool({ name: "search", arguments: { query: "kamal" } });
-    expect(JSON.parse(text(r)).results[0]).toMatchObject({ path: "shared/stack.md", wordRank: 1 });
+    const today = new Date().toISOString().slice(0, 10);
+    expect(text(r)).toBe(`## shared/stack.md  ${today}\n1-3 Stack [words]\nWe deploy with Kamal.`);
 
+    // Without baseVersion: the version and the note's outline, not its whole text.
     r = await writer.callTool({ name: "write", arguments: { path: "shared/stack.md", content: "# Stack\n\nx\n", why: "no base" } });
     expect(r.isError).toBe(true);
-    expect(text(r)).toContain(`current version: ${first.version}`);
-    expect(text(r)).toContain("We deploy with Kamal.");
+    expect(text(r)).toBe(
+      `shared/stack.md already exists. Change it with edit, or read the lines you need and write again with baseVersion ${first}.\n\n` +
+        "# Stack\nWe deploy with Kamal.\n3 lines:\n1-3 Stack",
+    );
+    // With a stale one: the current text, to merge into.
+    r = await writer.callTool({ name: "write", arguments: { path: "shared/stack.md", content: "# Stack\n\nx\n", why: "stale", baseVersion: "0000000" } });
+    expect(r.isError).toBe(true);
+    expect(text(r)).toContain(`Its current text is below; merge your change into it and write again with baseVersion ${first}.\n\n# Stack\n\nWe deploy with Kamal.`);
 
     r = await writer.callTool({
       name: "edit",
@@ -106,17 +114,22 @@ describe(`server (${backend})`, () => {
     expect(r.isError).toBeFalsy();
 
     r = await writer.callTool({ name: "history", arguments: { path: "shared/stack.md" } });
-    const { versions } = JSON.parse(text(r));
-    expect(versions.map((v: any) => [v.agent, v.why])).toEqual([
+    const versions = text(r).split("\n").map((l) => /^([0-9a-f]{12}) \d{4}-\d\d-\d\dT\d\d:\d\dZ (\w+): (.*)$/.exec(l)!.slice(1));
+    expect(versions.map(([, agent, why]) => [agent, why])).toEqual([
       ["writer", "switched deploy tool"],
       ["writer", "record the deploy tool"],
     ]);
+    expect(versions[1][0]).toBe(first!);
 
-    r = await writer.callTool({ name: "read", arguments: { path: "shared/stack.md", version: versions[1].version } });
+    r = await writer.callTool({ name: "read", arguments: { path: "shared/stack.md", version: versions[1][0] } });
     expect(text(r)).toContain("We deploy with Kamal.");
     r = await writer.callTool({ name: "read", arguments: { path: "shared/stack.md" } });
     expect(text(r)).toContain("Docker Compose");
-    expect(text(r)).toContain(`version: ${versions[0].version}`);
+    expect(text(r)).toContain(`version: ${versions[0][0]}`);
+
+    // A folder's history: what changed under it, newest first.
+    r = await writer.callTool({ name: "history", arguments: { path: "shared" } });
+    expect(text(r)).toMatch(/^\S+ writer shared\/stack\.md: switched deploy tool\n\S+ writer shared\/stack\.md: record the deploy tool$/);
   });
 
   test("grants are enforced on every tool", async () => {
@@ -142,10 +155,11 @@ describe(`server (${backend})`, () => {
     expect(ok.isError).toBeFalsy();
 
     // Search and list only show what the key may read.
-    const s = JSON.parse(text(await reader.callTool({ name: "search", arguments: { query: "zebra" } })));
-    expect(s.results).toEqual([]);
-    const root = JSON.parse(text(await reader.callTool({ name: "list", arguments: {} })));
-    expect(root.entries.map((e: any) => e.path).sort()).toEqual(["agents/", "shared/"]);
+    expect(text(await reader.callTool({ name: "search", arguments: { query: "zebra" } }))).toBe("No notes match.");
+    const root = text(await reader.callTool({ name: "list", arguments: {} }));
+    expect(root.split("\n").slice(1).map((l) => l.split("  ")[0])).toEqual(["agents/", "shared/"]);
+    // A folder's history leaves out what the key may not read.
+    expect(text(await reader.callTool({ name: "history", arguments: {} }))).not.toContain("projects/secret");
     // start skips the root profile, which the key may not read.
     const start = text(await reader.callTool({ name: "start", arguments: { path: "shared" } }));
     expect(start).toContain("## shared/profile.md");

@@ -61,6 +61,8 @@ describe(`agent tools (${backend})`, () => {
 
   test("start always loads shared/profile.md, before the profiles down the path", async () => {
     const shop = text(await agent.callTool({ name: "start", arguments: { path: "projects/shop" } }));
+    // First the agent's own name and folder, so it knows where its notes go.
+    expect(shop.split("\n")[0]).toBe("You are claude; your own notes go in agents/claude/");
     expect(shop).toContain("## shared/profile.md\n\n# Shared");
     expect(shop.indexOf("## shared/profile.md")).toBeLessThan(shop.indexOf("## projects/shop/profile.md"));
     expect(text(await agent.callTool({ name: "start", arguments: {} }))).toContain("## shared/profile.md");
@@ -73,11 +75,13 @@ describe(`agent tools (${backend})`, () => {
     const start = text(await agent.callTool({ name: "start", arguments: { path: "agents/claude" } }));
     expect(start).toContain("30 more entries are not shown: list a subfolder, or search.");
     expect(start).not.toContain("n0229.md");
-    const list = JSON.parse(text(await agent.callTool({ name: "list", arguments: { path: "agents/claude" } })));
-    expect(list.entries.length).toBe(MAP_ENTRIES);
-    expect(list.more).toContain("30 more entries");
-    // Compact: about 160 characters an entry, not a pretty-printed 200.
-    expect(start.length).toBeLessThan(MAP_ENTRIES * 170 + 1000);
+    const list = text(await agent.callTool({ name: "list", arguments: { path: "agents/claude" } })).split("\n");
+    expect(list[0]).toBe("# /agents/claude/ (230 entries: name, last change, summary)");
+    expect(list.length).toBe(1 + MAP_ENTRIES + 1);
+    expect(list.at(-1)).toContain("30 more entries");
+    // One short line an entry: name, date, summary.
+    expect(list[1]).toMatch(/^n0000\.md  \d{4}-\d\d-\d\d  /);
+    expect(start.length).toBeLessThan(MAP_ENTRIES * 80 + 1000);
   });
 
   test("every tool describes its parameters, and says whether it only reads", async () => {

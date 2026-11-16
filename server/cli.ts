@@ -6,7 +6,7 @@ import { type Config, ENV_PREFIX, type LoadedConfig, loadConfig } from "./config
 import { openStore } from "./db";
 import { UserError } from "./files";
 import { requireGit, startServer } from "./index";
-import { LocalEmbedder } from "./index/embed";
+import { WorkerEmbedder } from "./index/embed";
 import { lockDataDir } from "./lock";
 import { Memory } from "./memory";
 import { NAME } from "./name";
@@ -150,7 +150,7 @@ async function reindex(config: Config) {
   try {
     const store = await openStore(config.databaseUrl);
     await store.resetIndex();
-    const embedder = config.embedModel === "off" ? null : new LocalEmbedder(config.embedModel, config.modelsDir);
+    const embedder = config.embedModel === "off" ? null : new WorkerEmbedder(config.embedModel, config.modelsDir);
     const memory = await Memory.open({ dataDir: config.dataDir, maxFileBytes: config.maxFileBytes, store, embedder });
     const { docs, sections } = await store.counts();
     console.log(`Word index rebuilt: ${docs} files, ${sections} sections.`);

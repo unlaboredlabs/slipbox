@@ -5,7 +5,7 @@ import { apiHandler, error } from "./api";
 import type { Config } from "./config";
 import { openStore } from "./db";
 import { UserError } from "./files";
-import { type Embedder, LocalEmbedder } from "./index/embed";
+import { type Embedder, WorkerEmbedder } from "./index/embed";
 import { lockDataDir } from "./lock";
 import { handleMcp } from "./mcp";
 import { Memory } from "./memory";
@@ -54,7 +54,7 @@ export async function startServer(config: Config, opts: { embedder?: Embedder | 
         ? opts.embedder
         : config.embedModel === "off"
           ? null
-          : new LocalEmbedder(config.embedModel, config.modelsDir);
+          : new WorkerEmbedder(config.embedModel, config.modelsDir);
     memory = await Memory.open({
       dataDir: config.dataDir,
       maxFileBytes: config.maxFileBytes,

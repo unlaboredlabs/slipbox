@@ -97,6 +97,12 @@ export abstract class Store {
     return row ? toDoc(row) : null;
   }
 
+  async docsByPath(paths: string[]): Promise<Doc[]> {
+    if (!paths.length) return [];
+    const rows = await this.sql.unsafe(`select * from docs where path in (${paths.map((_, i) => this.param(i)).join(", ")})`, paths);
+    return rows.map(toDoc);
+  }
+
   /** Every doc under a folder ("" for all). */
   async docsUnder(dir: string): Promise<Doc[]> {
     const rows = await this.sql`select * from docs where substr(path, 1, ${dir.length}) = ${dir} order by path`;

@@ -45,13 +45,22 @@ describe(`files and history (${backend})`, () => {
 
   test("replacing a file needs the current baseVersion", async () => {
     const first = await m.memory.write(writer, "shared/a.md", "# A\n\none\n", "create");
-    await expect(m.memory.write(writer, "shared/a.md", "# A\n\ntwo\n", "no base")).rejects.toMatchObject({ code: "stale" });
+    // Without a base: the version and the note's outline, not its text.
+    const exists = await m.memory.write(writer, "shared/a.md", "# A\n\ntwo\n", "no base").catch((e) => e);
+    expect(exists).toMatchObject({ code: "exists", details: { version: first.version, outline: "# A\none\n3 lines:\n1-3 A" } });
     const second = await m.memory.write(writer, "shared/a.md", "# A\n\ntwo\n", "update", first.version!);
     expect(second.version).toBe(versionOf("# A\n\ntwo\n"));
     // A write based on the old version is refused, and gets the current text back.
     const err = await m.memory.write(writer, "shared/a.md", "# A\n\nthree\n", "late", first.version!).catch((e) => e);
     expect(err.code).toBe("stale");
     expect(err.details).toEqual({ version: second.version, content: "# A\n\ntwo\n" });
+  });
+
+  test("appending to a note that does not exist is refused: it would have no title", async () => {
+    const err = await m.memory.edit(writer, "shared/new-log.md", "", "- first entry\n", "log").catch((e) => e);
+    expect(err).toMatchObject({ code: "not_found" });
+    expect(err.message).toContain("Create it with write");
+    expect(m.memory.files.exists("shared/new-log.md")).toBe(false);
   });
 
   test("concurrent edits to one file are serialised: none are lost", async () => {
