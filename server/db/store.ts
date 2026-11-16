@@ -69,6 +69,11 @@ export abstract class Store {
     await this.sql.close();
   }
 
+  /** Runs a script of statements separated by semicolons (none inside literals). */
+  protected async exec(script: string) {
+    for (const stmt of script.split(";")) if (stmt.trim()) await this.sql.unsafe(stmt);
+  }
+
   // Docs and sections
 
   async docHashes(): Promise<Map<string, string>> {

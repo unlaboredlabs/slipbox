@@ -73,12 +73,12 @@ export class PostgresStore extends Store {
 
   async init() {
     await this.sql.unsafe("set client_min_messages = warning");
-    await this.sql.unsafe(SCHEMA);
+    await this.exec(SCHEMA);
   }
 
   async resetIndex() {
     await this.sql.unsafe("drop table if exists sections, docs, embeddings");
-    await this.sql.unsafe(INDEX_SCHEMA);
+    await this.exec(INDEX_SCHEMA);
   }
 
   protected param(i: number) {

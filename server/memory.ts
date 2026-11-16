@@ -73,7 +73,8 @@ export class Memory {
     this.watcher?.close();
     for (const t of this.timers.values()) clearTimeout(t);
     this.embeddings.close();
-    await this.embeddings.settle();
+    // Let a batch in flight finish, but never wait long on the model.
+    await Promise.race([this.embeddings.settle(), Bun.sleep(2000)]);
   }
 
   // Reading

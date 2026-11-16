@@ -76,12 +76,12 @@ export class SqliteStore extends Store {
   }
 
   async init() {
-    await this.sql.unsafe(SCHEMA);
+    await this.exec(SCHEMA);
   }
 
   async resetIndex() {
-    await this.sql.unsafe("drop table if exists sections_fts; drop table if exists sections; drop table if exists docs; drop table if exists embeddings;");
-    await this.sql.unsafe(INDEX_SCHEMA);
+    await this.exec("drop table if exists sections_fts; drop table if exists sections; drop table if exists docs; drop table if exists embeddings");
+    await this.exec(INDEX_SCHEMA);
   }
 
   protected param(_i: number) {

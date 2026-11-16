@@ -229,6 +229,7 @@ export class Embeddings {
       if (!v || v.length !== q.length || !canRead(s.path)) continue;
       let dot = 0;
       for (let i = 0; i < q.length; i++) dot += q[i] * v[i];
+      if (dot <= 0) continue; // unrelated
       hits.push({ id, score: dot });
     }
     hits.sort((a, b) => b.score - a.score);
