@@ -66,7 +66,7 @@ export type ActivityEvent = {
 export type Grant = { prefix: string; mode: "read" | "write" };
 
 export type Agent = {
-  id: string;
+  id: number;
   name: string;
   createdAt: string;
   lastSeenAt: string | null;
@@ -159,8 +159,8 @@ export const api = {
   agents: () => request<{ agents: Agent[] }>("GET", "agents"),
   createAgent: (name: string, grants: Grant[]) =>
     request<{ agent: Agent; key: string }>("POST", "agents", { body: { name, grants } }),
-  updateAgent: (id: string, patch: { grants?: Grant[]; revoked?: boolean }) =>
-    request<{ agent: Agent }>("PATCH", `agents/${encodeURIComponent(id)}`, { body: patch }),
+  updateAgent: (id: number, patch: { grants?: Grant[]; revoked?: boolean }) =>
+    request<{ agent: Agent }>("PATCH", `agents/${id}`, { body: patch }),
 };
 
 /**

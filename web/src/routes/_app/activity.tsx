@@ -31,21 +31,23 @@ function merge(current: ActivityEvent[] | undefined, incoming: ActivityEvent[]) 
   return [...byId.values()].sort((a, b) => b.id - a.id).slice(0, KEEP);
 }
 
+const loadEvents = async () => (await api.events({ limit: 500 })).events;
+
 /** Loads recent events, then keeps them current from the stream. */
 function useLiveEvents() {
   const queryClient = useQueryClient();
   const [live, setLive] = useState(false);
   const fresh = useRef(new Set<number>());
 
-  const query = useQuery({
-    queryKey: EVENTS_KEY,
-    queryFn: async () => (await api.events({ limit: 500 })).events,
-    staleTime: Infinity,
-  });
+  const query = useQuery({ queryKey: EVENTS_KEY, queryFn: loadEvents, staleTime: Infinity });
 
   useEffect(() => {
-    const add = (incoming: ActivityEvent[], highlight: boolean) => {
+    // Waits for the first load (shared with the query above), so nothing that
+    // arrives before it is dropped.
+    const loaded = () => queryClient.ensureQueryData({ queryKey: EVENTS_KEY, queryFn: loadEvents });
+    const add = async (incoming: ActivityEvent[], highlight: boolean) => {
       if (highlight) for (const e of incoming) fresh.current.add(e.id);
+      await loaded().catch(() => undefined);
       queryClient.setQueryData<ActivityEvent[]>(EVENTS_KEY, (current) => (current ? merge(current, incoming) : current));
     };
     return followEvents({
@@ -53,8 +55,7 @@ function useLiveEvents() {
       onStatus: setLive,
       // Fill anything missed before the stream opened, or while it was down.
       onOpen: async () => {
-        const latest = queryClient.getQueryData<ActivityEvent[]>(EVENTS_KEY)?.[0]?.id;
-        if (latest === undefined) return;
+        const latest = (await loaded().catch(() => undefined))?.[0]?.id ?? 0;
         const { events } = await api.events({ after: latest, limit: 500 }).catch(() => ({ events: [] }));
         add(events, true);
       },

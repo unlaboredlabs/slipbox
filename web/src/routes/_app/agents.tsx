@@ -93,7 +93,7 @@ function AgentsPage() {
   );
   const columns = useMemo(() => agentColumns(setDialog), []);
 
-  const table = useReactTable({ data: rows, columns, getCoreRowModel: getCoreRowModel(), autoResetPageIndex: false, getRowId: (a) => a.id });
+  const table = useReactTable({ data: rows, columns, getCoreRowModel: getCoreRowModel(), autoResetPageIndex: false, getRowId: (a) => String(a.id) });
 
   return (
     <>

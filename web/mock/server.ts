@@ -19,7 +19,7 @@ const DIST = join(import.meta.dir, "..", "dist");
 // A version of null marks the commit that deleted the file; its content is "".
 type Version = { version: string | null; commit: string; at: string; agent: string; why: string; content: string };
 type Grant = { prefix: string; mode: "read" | "write" };
-type Agent = { id: string; name: string; createdAt: string; lastSeenAt: string | null; revoked: boolean; grants: Grant[] };
+type Agent = { id: number; name: string; createdAt: string; lastSeenAt: string | null; revoked: boolean; grants: Grant[] };
 type Event = { id: number; at: string; agent: string; action: string; path: string | null; query: string | null; ok: boolean };
 
 const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
@@ -34,8 +34,9 @@ for (const seed of seedFiles) {
   );
 }
 
+let nextAgentId = 1;
 const agents: Agent[] = seedAgents.map((a) => ({
-  id: hex(6),
+  id: nextAgentId++,
   name: a.name,
   createdAt: ago(a.daysOld * 86400_000),
   lastSeenAt: ago(a.seenMinutesAgo * 60_000),
@@ -314,7 +315,9 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
   if (route === "GET /api/diff") {
     const path = p.get("path") ?? "";
     const versions = files.get(path);
+    if (!p.get("to")) return fail(400, "bad_request", "to is required.");
     const to = versions?.find((v) => v.commit === p.get("to"));
+    // Like the server: no `from` diffs against nothing, so a first version is all added lines.
     const from = p.get("from") ? versions?.find((v) => v.commit === p.get("from")) : undefined;
     if (!to || (p.get("from") && !from)) return fail(404, "not_found", "Unknown commit");
     return json({ diff: unifiedDiff(path, from?.content ?? "", to.content) });
@@ -369,13 +372,13 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     if (!/^[a-z0-9][a-z0-9._-]*$/.test(name)) return fail(400, "bad_request", "Name must be lowercase letters, digits, dots, dashes or underscores");
     if (agents.some((a) => a.name === name && !a.revoked)) return fail(409, "exists", `An agent named ${name} already exists`);
     if (!validGrants(body.grants)) return fail(400, "bad_request", "Invalid grants");
-    const agent: Agent = { id: hex(6), name, createdAt: new Date().toISOString(), lastSeenAt: null, revoked: false, grants: normalizeGrants(body.grants) };
+    const agent: Agent = { id: nextAgentId++, name, createdAt: new Date().toISOString(), lastSeenAt: null, revoked: false, grants: normalizeGrants(body.grants) };
     agents.push(agent);
     return json({ agent, key: `ctx_${hex(24)}` });
   }
   const patch = url.pathname.match(/^\/api\/agents\/([^/]+)$/);
   if (req.method === "PATCH" && patch) {
-    const agent = agents.find((a) => a.id === patch[1]);
+    const agent = agents.find((a) => a.id === Number(patch[1]));
     if (!agent) return fail(404, "not_found", "No such agent");
     const body = await readBody(req);
     if (body.grants !== undefined) {
